@@ -15,6 +15,22 @@ class BZ98TRNArchitect:
         self.root = root # Keep reference to main root
         self.root.title("BZ98 Redux: World Builder Suite (V3.3)")
         self.root.geometry("1400x950")
+        
+        # Initialize variables first to prevent AttributeErrors
+        self.sky_prefix_var = tk.StringVar(value="pmars")
+        self.hg2_path = tk.StringVar() 
+        self.planet_var = tk.StringVar(value="AC")
+        
+# Use self. to make it an instance attribute
+        self.map_presets = [
+            "Tiny (1280m)", "Small (2560m)", "Medium (5120m)", 
+            "Large (10240m)", "Huge (20480m)", "Custom"
+        ]
+        
+        self.selected_preset = tk.StringVar(value=self.map_presets[2]) # Defaults to Medium
+        
+        self.hg2_width_meters = tk.IntVar(value=5120)
+        self.hg2_depth_meters = tk.IntVar(value=5120)
 
         # --- Variables ---
         self.planet_var = tk.StringVar(value="AC")
@@ -31,6 +47,8 @@ class BZ98TRNArchitect:
         self.zoom_level = 1.0
         self.trans_mode_var = tk.StringVar(value="Linear")
         self.trans_mode_var.trace_add("write", self.update_preview)
+        self.trans_mode_var.trace_add("write", lambda *args: self.update_preview())
+        self.style_var.trace_add("write", lambda *args: self.update_preview())
         
         self.export_dds = tk.BooleanVar(value=False)
         self.export_mat = tk.BooleanVar(value=True)
@@ -47,6 +65,7 @@ class BZ98TRNArchitect:
         self.exp_png = tk.BooleanVar(value=True)
         self.exp_csv = tk.BooleanVar(value=True)
         self.exp_trn = tk.BooleanVar(value=True)
+        self.exp_mat = tk.BooleanVar(value=True)
         
         self.source_dir = ""
         self.groups = {} 
@@ -70,6 +89,8 @@ class BZ98TRNArchitect:
                         self.hg2_target_zl.set(z_l)
                 except:
                     pass
+            # Trigger preview update after selection
+            self.update_hg2_preview()
 
     def convert_hg2_to_png(self):
         path = self.hg2_path.get()
@@ -243,6 +264,7 @@ class BZ98TRNArchitect:
         tk.Checkbutton(ctrls, text="Export PNG", variable=self.exp_png).pack(anchor="w")
         tk.Checkbutton(ctrls, text="Export CSV", variable=self.exp_csv).pack(anchor="w")
         tk.Checkbutton(ctrls, text="Export TRN", variable=self.exp_trn).pack(anchor="w")
+        tk.Checkbutton(ctrls, text="Export MAT", variable=self.exp_mat).pack(anchor="w") # New UI toggle
 
         tk.Button(ctrls, text="1. SELECT FOLDER", command=self.browse, bg="#9e9e9e", height=2).pack(fill="x", pady=(15,5))
         # Small Tip Label
@@ -264,83 +286,96 @@ class BZ98TRNArchitect:
         self.on_mode_change()
 
     def setup_world_tab(self):
-        # Main container split into Left (Controls) and Right (Preview)
         container = tk.Frame(self.tab_world, padx=20, pady=20)
         container.pack(fill="both", expand=True)
 
         # --- LEFT PANEL: CONTROLS ---
-        left_panel = tk.Frame(container, width=450)
+        left_panel = tk.Frame(container, width=400) 
         left_panel.pack(side="left", fill="y", padx=(0, 20))
+        left_panel.pack_propagate(False) 
 
-        # 1. Skybox Section Header
-        tk.Label(left_panel, text="SKYBOX & HG2 TOOLS", font=("Arial", 14, "bold")).pack(anchor="w")
+        # --- SECTION 1: SKYBOX TOOLS ---
+        tk.Label(left_panel, text="SKYBOX TOOLS", font=("Arial", 14, "bold")).pack(anchor="w")
         
-        # --- INPUT FRAME ---
-        sky_frame = tk.LabelFrame(left_panel, text=" Input Panorama ", padx=10, pady=10)
-        sky_frame.pack(fill="x", pady=5)
+        sky_input_frame = tk.LabelFrame(left_panel, text=" Input Panorama ", padx=10, pady=10)
+        sky_input_frame.pack(fill="x", pady=5)
+        tk.Entry(sky_input_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
+        tk.Button(sky_input_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
 
-        tk.Entry(sky_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
-        tk.Button(sky_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
+        sky_cfg_frame = tk.Frame(left_panel)
+        sky_cfg_frame.pack(fill="x", pady=5)
+        tk.Label(sky_cfg_frame, text="Prefix:").pack(side="left")
+        tk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
+        tk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
+        tk.OptionMenu(sky_cfg_frame, self.sky_out_res, 512, 1024, 2048).pack(side="left")
 
-        # --- SETTINGS ---
-        settings_frame = tk.Frame(left_panel)
-        settings_frame.pack(fill="x", pady=5)
-        
-        tk.Label(settings_frame, text="Face Resolution:").pack(side="left")
-        tk.OptionMenu(settings_frame, self.sky_out_res, 512, 1024, 2048).pack(side="left", padx=10)
+        # Skybox Export Toggles (Restored)
+        sky_exp_opts = tk.Frame(left_panel)
+        sky_exp_opts.pack(fill="x", pady=5)
+        tk.Checkbutton(sky_exp_opts, text="DDS", variable=self.export_dds).pack(side="left")
+        tk.Checkbutton(sky_exp_opts, text="Material", variable=self.export_mat).pack(side="left")
+        tk.Checkbutton(sky_exp_opts, text="TRN", variable=self.export_trn).pack(side="left")
 
-        # --- NEW EXPORT OPTIONS ---
-        export_options = tk.LabelFrame(left_panel, text=" Export Settings ", padx=10, pady=10)
-        export_options.pack(fill="x", pady=10)
+        tk.Button(left_panel, text="🚀 EXPORT SKYBOX", command=self.export_skybox, 
+                  bg="#2e7d32", fg="white", font=("Arial", 10, "bold")).pack(fill="x", pady=(5, 15))
 
-        tk.Checkbutton(export_options, text="Export as DDS", variable=self.export_dds).pack(anchor="w")
-        tk.Checkbutton(export_options, text="Export Material (.mat)", variable=self.export_mat).pack(anchor="w")
-        tk.Checkbutton(export_options, text="Export TRN Entry", variable=self.export_trn).pack(anchor="w")
+        ttk.Separator(left_panel, orient="horizontal").pack(fill="x", pady=10)
 
-        # --- THE EXPORT BUTTON ---
-        tk.Button(left_panel, text="🚀 FINAL EXPORT", command=self.export_skybox, 
-                  bg="#2e7d32", fg="white", font=("Arial", 11, "bold"), height=2).pack(fill="x", pady=10)
-
-        # --- HELP TIP ---
-        help_text = "Tip: High-res exports use Bicubic interpolation for the best quality. Previews use Linear for speed."
-        tk.Label(left_panel, text=help_text, font=("Arial", 8, "italic"), fg="gray", wraplength=350).pack(pady=10)
-
-        # --- RIGHT PANEL: HG2 PREVIEW ---
-        right_panel = tk.Frame(container, bg="#111")
-        right_panel.pack(side="right", expand=True, fill="both")
-        
-                # 2. HG2 Converter Section
+# --- UPDATED SECTION 2: HEIGHTMAP CONVERTER ---
         tk.Label(left_panel, text="HEIGHTMAP CONVERTER", font=("Arial", 14, "bold")).pack(anchor="w")
-        hg2_frame = tk.LabelFrame(left_panel, text=" Terrain Settings ", padx=15, pady=15)
-        hg2_frame.pack(fill="x", pady=10)
+        hg2_frame = tk.LabelFrame(left_panel, text=" Terrain Settings ", padx=10, pady=10)
+        hg2_frame.pack(fill="x", pady=5)
 
-        self.hg2_path = tk.StringVar()
-        # Trace path changes to update preview automatically
-        self.hg2_path.trace_add("write", self.update_hg2_preview)
-        
         tk.Entry(hg2_frame, textvariable=self.hg2_path).pack(fill="x", pady=2)
-        tk.Button(hg2_frame, text="1. BROWSE HG2/PNG", command=self.browse_hg2).pack(fill="x", pady=5)
+        tk.Button(hg2_frame, text="Browse HG2/PNG", command=self.browse_hg2).pack(fill="x", pady=5)
 
-        # Fine-tune Sliders for the Exporter
-        self.create_hg2_slider(hg2_frame, "Export Brightness:", self.hg2_brightness, 0.1, 2.0, 0.1)
-        self.create_hg2_slider(hg2_frame, "Export Contrast:", self.hg2_contrast, 0.1, 2.0, 0.1)
-        self.create_hg2_slider(hg2_frame, "Smoothing (Blur):", self.hg2_smooth_val, 0, 10, 1)
+        # Map Dimension Presets
+        tk.Label(hg2_frame, text="Map Size Preset When Converting PNG to HG2:").pack(anchor="w", pady=(5,0))
+        self.preset_var = tk.StringVar(value="Medium (5120m)")
+        preset_menu = ttk.Combobox(hg2_frame, textvariable=self.preset_var, values=self.map_presets, state="readonly")
+        preset_menu.pack(fill="x", pady=5)
+        preset_menu.bind("<<ComboboxSelected>>", self.apply_map_preset)
 
-        # Export Buttons
-        btn_frame = tk.Frame(hg2_frame)
-        btn_frame.pack(fill="x", pady=10)
-        tk.Button(btn_frame, text="HG2 -> PNG", bg="#0288d1", fg="white",
-                  command=self.convert_hg2_to_png).pack(side="left", expand=True, fill="x", padx=(0,5))
-        tk.Button(btn_frame, text="PNG -> HG2", bg="#f57c00", fg="white",
-                  command=self.convert_png_to_hg2).pack(side="left", expand=True, fill="x", padx=(5,0))
+        # Manual Dimension Controls
+        dim_frame = tk.Frame(hg2_frame)
+        dim_frame.pack(fill="x", pady=5)
+        
+        tk.Label(dim_frame, text="Width (m):").grid(row=0, column=0, sticky="w")
+        tk.Entry(dim_frame, textvariable=self.hg2_width_meters, width=8).grid(row=0, column=1, padx=5)
+        
+        tk.Label(dim_frame, text="Depth (m):").grid(row=1, column=0, sticky="w")
+        tk.Entry(dim_frame, textvariable=self.hg2_depth_meters, width=8).grid(row=1, column=1, padx=5)
+        
+        tk.Label(hg2_frame, text="*Must be multiples of 1280", font=("Arial", 7, "italic"), fg="gray").pack(anchor="w")
 
-        # --- RIGHT PANEL: LIVE PREVIEW ---
-        right_panel = tk.LabelFrame(container, text=" Heightmap Visualizer (Normalized 8-bit) ", bg="#111")
+        self.create_hg2_slider(hg2_frame, "Brightness:", self.hg2_brightness, 0.1, 2.0, 0.1)
+        self.create_hg2_slider(hg2_frame, "Contrast:", self.hg2_contrast, 0.1, 2.0, 0.1)
+        self.create_hg2_slider(hg2_frame, "Smoothing:", self.hg2_smooth_val, 0, 10, 1)
+
+        hg2_btn_frame = tk.Frame(hg2_frame)
+        hg2_btn_frame.pack(fill="x", pady=5)
+        tk.Button(hg2_btn_frame, text="HG2 -> PNG", bg="#0288d1", fg="white",
+                  command=self.convert_hg2_to_png).pack(side="left", expand=True, fill="x", padx=(0,2))
+        tk.Button(hg2_btn_frame, text="PNG -> HG2", bg="#f57c00", fg="white",
+                  command=self.convert_png_to_hg2).pack(side="left", expand=True, fill="x", padx=(2,0))
+
+        # --- RIGHT PANEL: UNIFIED PREVIEW ---
+        right_panel = tk.LabelFrame(container, text=" Preview Visualizer ", bg="#111")
         right_panel.pack(side="right", expand=True, fill="both")
 
-        self.hg2_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
-        self.hg2_preview_canvas.pack(expand=True, fill="both", padx=10, pady=10)
-
+        self.world_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
+        self.world_preview_canvas.pack(expand=True, fill="both", padx=10, pady=10)
+    def apply_map_preset(self, event=None):
+            selection = self.preset_var.get()
+            if "Custom" in selection: return
+            
+            # Extract the number from the string e.g. "Small (2560m)" -> 2560
+            import re
+            match = re.search(r'\((\d+)m\)', selection)
+            if match:
+                size = int(match.group(1))
+                self.hg2_width_meters.set(size)
+                self.hg2_depth_meters.set(size)
     def create_hg2_slider(self, parent, label, var, from_, to, res):
         """Helper to create sliders that trigger the preview update"""
         tk.Label(parent, text=label, font=("Arial", 9)).pack(anchor="w")
@@ -395,14 +430,14 @@ class BZ98TRNArchitect:
                 
             preview_8bit = Image.fromarray((norm_arr * 255).astype(np.uint8))
             
-            cw = self.hg2_preview_canvas.winfo_width()
-            ch = self.hg2_preview_canvas.winfo_height()
+            cw = self.world_preview_canvas.winfo_width()
+            ch = self.world_preview_canvas.winfo_height()
             if cw < 10: cw, ch = 600, 600
             
             preview_8bit.thumbnail((cw, ch), Image.Resampling.LANCZOS)
             self.hg2_tk_photo = ImageTk.PhotoImage(preview_8bit)
-            self.hg2_preview_canvas.delete("all")
-            self.hg2_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
+            self.world_preview_canvas.delete("all")
+            self.world_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
             
         except Exception as e:
             print(f"Preview Update Error: {e}")
@@ -460,7 +495,7 @@ class BZ98TRNArchitect:
             messagebox.showerror("Preview Error", f"Could not generate preview: {str(e)}")
 
     def export_skybox(self):
-        """High-quality export using full resolution and Order 3 (Bicubic)."""
+        """High-quality export with sorted TRN entries and uppercase material names."""
         path = self.sky_input_path.get()
         if not path or not hasattr(self, 'generated_faces'):
             messagebox.showwarning("Warning", "Please load an image first.")
@@ -473,30 +508,69 @@ class BZ98TRNArchitect:
             # Load original for high-res processing
             img_data = np.array(Image.open(path).convert("RGB")).astype(np.float32)
             res = self.sky_out_res.get()
-            base_name = os.path.splitext(os.path.basename(path))[0]
+            
+            # Use the user-defined prefix (enforce lowercase for filenames)
+            base_name = self.sky_prefix_var.get().lower().strip()
+            
+            # Mapping faces to their specific BZ98 TRN parameters
+            # Format: suffix: (Azimuth, Elevation, Roll, StarIndex)
+            face_params = {
+                'nz': (0, 0, 180, "01"),
+                'ny': (0, -90, 0, "02"),
+                'nx': (270, 0, 180, "03"),
+                'pz': (180, 0, 180, "04"),
+                'px': (90, 0, 180, "05"),
+                'py': (0, 90, 0, "06")
+            }
+            
+            # Map face_idx to suffixes for image generation logic
             face_map = {0: 'pz', 1: 'nz', 2: 'px', 3: 'nx', 4: 'py', 5: 'ny'}
 
-            # 1. Generate and Save High-Quality PNG faces
+            # 1. Generate and Save Images and .material files
             for i in range(6):
                 face_arr = self.generate_cube_face(img_data, i, res, order=3)
                 face_arr = np.clip(face_arr, 0, 255).astype(np.uint8)
-                face_key = face_map[i]
+                suffix = face_map[i]
                 img = Image.fromarray(face_arr)
-                img.save(os.path.join(out_dir, f"{base_name}_{face_key}.png"))
+                
+                # Save PNG
+                img.save(os.path.join(out_dir, f"{base_name}{suffix}.png"))
 
-            # 2. Export Material File
-            if self.export_mat.get():
-                with open(os.path.join(out_dir, f"{base_name}.mat"), "w") as f:
-                    f.write(f"// Skybox Material\ntype skybox\n")
-                    for k in face_map.values():
-                        f.write(f"{k} {base_name}_{k}.png\n")
+                # 2. Export .material file
+                if self.export_mat.get():
+                    mat_filename = f"{base_name}{suffix}.material"
+                    with open(os.path.join(out_dir, mat_filename), "w") as f:
+                        # Material name example: PMARSNZ.MAP (Uppercase)
+                        mat_name_upper = f"{base_name.upper()}{suffix.upper()}.MAP"
+                        f.write(f"material {mat_name_upper}\n")
+                        f.write("{\n    technique\n    {\n        pass\n        {\n")
+                        f.write("            vertex_program_ref Sky_vertex\n            {\n            }\n")
+                        f.write("            fragment_program_ref Sky_fragment\n            {\n            }\n\n")
+                        f.write("            lighting off\n            fog_override true none\n")
+                        f.write("            scene_blend alpha_blend\n            depth_write off\n")
+                        f.write("            texture_unit\n            {\n")
+                        f.write(f"                texture {base_name}{suffix}.dds\n")
+                        f.write("            }\n        }\n    }\n}\n")
 
-            # 3. Export TRN Entry
+            # 3. Export TRN Entry (Sorted 01 -> 06)
             if self.export_trn.get():
-                with open(os.path.join(out_dir, f"{base_name}_entry.txt"), "w") as f:
-                    f.write(f"[Skybox]\nName={base_name}\nRes={res}\n")
+                with open(os.path.join(out_dir, "TRN_Entries.txt"), "w") as f:
+                    f.write("[Sky]\n\nBackdropTexture =\n\nBackdropDistance= 400\n\n")
+                    f.write("BackdropWidth   = 800\n\nBackdropHeight  = 100\n\n[Stars]\n\nRadius      = 4096\n\n")
+                    
+                    # Sort by the StarIndex ("01", "02", etc.)
+                    sorted_items = sorted(face_params.items(), key=lambda x: x[1][3])
+                    
+                    for suffix, (azi, elev, roll, idx) in sorted_items:
+                        f.write(f"Texture{idx}   = {base_name}{suffix}.map\n")
+                        f.write(f"Color{idx}     = \"255 255 255 96\"\n")
+                        f.write(f"Alpha{idx}     = 0\n")
+                        f.write(f"Size{idx}      = 8192\n")
+                        f.write(f"Azimuth{idx}   = {azi}\n")
+                        f.write(f"Elevation{idx} = {elev}\n")
+                        f.write(f"Roll{idx}      = {roll}\n\n")
 
-            messagebox.showinfo("Success", f"Exported to {out_dir}")
+            messagebox.showinfo("Success", "Export Complete: TRN entries sorted 01-06.")
         except Exception as e:
             messagebox.showerror("Export Error", str(e))
 
@@ -535,25 +609,31 @@ class BZ98TRNArchitect:
         return np.stack(channels, axis=-1)
 
     def update_skybox_preview(self, face_dict):
-        # Use the width of the face in the preview (e.g., 150px or res)
+        # Create a 4x3 grid layout for the preview
         res = next(iter(face_dict.values())).width 
         canvas_img = Image.new("RGB", (res * 4, res * 3), (30, 30, 30))
 
+        # BZ98 Star Layout Mapping
         layout = {
             'nx': (0, 1), 'pz': (1, 1), 'px': (2, 1), 'nz': (3, 1),
             'py': (1, 0), 'ny': (1, 2)
         }
 
-        for face_key, grid_pos in layout.items():
-            if face_key in face_dict:
-                canvas_img.paste(face_dict[face_key], (grid_pos[0] * res, grid_pos[1] * res))
+        for face, (grid_x, grid_y) in layout.items():
+            if face in face_dict:
+                canvas_img.paste(face_dict[face], (grid_x * res, grid_y * res))
 
-        cw, ch = self.hg2_preview_canvas.winfo_width(), self.hg2_preview_canvas.winfo_height()
+        # Update the canvas
+        self.root.update_idletasks()
+        cw = self.world_preview_canvas.winfo_width()
+        ch = self.world_preview_canvas.winfo_height()
         if cw < 10: cw, ch = 800, 600
+        
         canvas_img.thumbnail((cw, ch), Image.Resampling.LANCZOS)
-        self.hg2_tk_photo = ImageTk.PhotoImage(canvas_img)
-        self.hg2_preview_canvas.delete("all")
-        self.hg2_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
+        self.world_tk_photo = ImageTk.PhotoImage(canvas_img)
+        
+        self.world_preview_canvas.delete("all")
+        self.world_preview_canvas.create_image(cw//2, ch//2, anchor="center", image=self.world_tk_photo)
 
     def on_res_change(self, *args):
         if self.source_dir: self.browse(initial=False) # Reload images with new res
@@ -598,7 +678,6 @@ class BZ98TRNArchitect:
             count = max(1, self.teeth_count.get())
             jitter = self.jitter_var.get()
 
-            # Fixed Tuple Assignment Logic
             if mode == "cap":
                 line_start, line_end = (0, res * 0.75), (res, res * 0.75)
                 fill_pts = [(res, res), (0, res)]
@@ -611,7 +690,6 @@ class BZ98TRNArchitect:
                 t = i / count
                 px = line_start[0] + (line_end[0] - line_start[0]) * t
                 py = line_start[1] + (line_end[1] - line_start[1]) * t
-                
                 off = (depth_px if i % 2 == 0 else -depth_px) + random.uniform(-jitter, jitter)
                 
                 if style == "Square/Blocky":
@@ -620,7 +698,6 @@ class BZ98TRNArchitect:
                 elif style == "Sawtooth":
                     pts.append((px + off, py + off))
                 elif style == "Sine Wave":
-                    # Offset perpendicular to the line flow
                     s_val = math.sin(t * math.pi * 2) * depth_px
                     pts.append((px + s_val, py + s_val))
                 elif style == "Stairs/Steps":
@@ -632,13 +709,12 @@ class BZ98TRNArchitect:
             pts.append(line_end)
             draw.polygon(pts + fill_pts, fill=255)
 
-        # --- ENGINE B: FIELD-BASED (Organic/Noise) ---
+        # --- ENGINE B: FIELD-BASED (Organic/Noise/Circuit) ---
         else:
             gradient = np.zeros((res, res), dtype=np.float32)
             for y in range(res):
                 for x in range(res):
                     if style == "Radial/Impact":
-                        # Circular gradient from bottom-right
                         dist = math.sqrt((res-x)**2 + (res-y)**2)
                         gradient[y, x] = dist / (res * 1.414)
                     elif mode == "cap":
@@ -649,17 +725,25 @@ class BZ98TRNArchitect:
             influence = self.jitter_var.get() / 100.0
             freq = max(1, self.teeth_count.get())
             
+            # Generate primary noise
             noise_img = Image.effect_noise((res, res), freq)
             noise_arr = np.array(noise_img).astype(np.float32) / 255.0
             
             if style == "Voronoi/Cells":
+                # Create cellular stepping
                 noise_arr = np.round(noise_arr * (freq / 5)) / (freq / 5)
-            elif style == "Plasma/Circuit":
-                noise_arr = np.abs(np.sin(noise_arr * freq))
             
+            elif style == "Plasma/Circuit":
+                # FIXED: Apply aggressive sine warping to create "traces"
+                # This uses the 'depth' slider (influence) to control trace complexity
+                plasma = np.sin(noise_arr * freq) * np.cos(noise_arr.T * freq)
+                noise_arr = (plasma + 1) / 2 # Re-normalize to 0.0 - 1.0
+
+            # Blend noise with the directional gradient
             warped = np.clip(gradient + (noise_arr - 0.5) * influence * 2, 0, 1)
             mask = Image.fromarray((warped * 255).astype(np.uint8))
             
+            # Apply final style-specific thresholding
             if style == "Soft Clouds":
                 mask = mask.point(lambda p: 255 if p > 128 else 0)
             elif style == "Fractal Noise":
@@ -668,7 +752,11 @@ class BZ98TRNArchitect:
                 mask = Image.composite(crunch, mask, mask.filter(ImageFilter.GaussianBlur(10)))
             elif style == "Binary Dither":
                 mask = mask.convert("1").convert("L")
-            else: # Default threshold
+            elif style == "Plasma/Circuit":
+                # Create sharp "trace" lines by thresholding the peaks of the sine waves
+                mask = mask.point(lambda p: 255 if 110 < p < 145 else 0)
+            else: 
+                # Default sharp threshold for Voronoi and Radial
                 mask = mask.point(lambda p: 255 if p > 128 else 0)
 
         blur = self.blend_softness.get()
@@ -750,78 +838,128 @@ class BZ98TRNArchitect:
 
     def generate(self):
         if not self.groups: return
-        res, prfx = self.tile_res_var.get(), self.planet_var.get().lower()
+        
+        # Setup naming and resolution vars
+        res = self.tile_res_var.get()
+        prfx = self.planet_var.get().lower()
+        prfx_upper = prfx.upper()
         mode = self.trans_mode_var.get()
+        
         baked_data = []
         trn_blocks = {}
         indices = sorted(self.groups.keys())
         
+        # Initialize TRN structure
         for i in indices:
             trn_blocks[i] = {"solids": [], "transitions": []}
 
-# 1. Process Solids (Updated for repeated index naming)
+        # 1. Process Solids
         for i in indices:
             vars_found = sorted(self.groups[i].keys())
-            # Create the repeated index string (e.g., 0->00, 1->11, 10->1010)
-            repeat_idx = f"{i}{i}" if i > 9 else f"{i}{i}" # Simplified: just repeat i
-            
+            repeat_idx = f"{i}{i}"
             for idx, var in enumerate(vars_found):
-                # Using repeat_idx so Tile 1 becomes dw11sA0.MAP
-                name = f"{prfx}{repeat_idx}s{var}0.MAP"
+                # Using upper case for MAP names to ensure engine compatibility
+                name = f"{prfx}{repeat_idx}s{var}0.MAP".upper()
                 baked_data.append((name, self.groups[i][var]))
                 slot = chr(65 + idx) 
                 trn_blocks[i]["solids"].append((slot, name))
 
-        # 2. Process Transitions (Fixed Filenames)
+        # 2. Process Transitions
         c_m, d_m = self.generate_mask("cap"), self.generate_mask("diag")
         for idx, i in enumerate(indices):
-            if mode == "Linear":
-                targets = [indices[idx + 1]] if idx + 1 < len(indices) else []
-            else:
-                targets = indices[idx + 1:]
+            # Determine logic based on Linear or Matrix mode
+            targets = [indices[idx + 1]] if mode == "Linear" and idx + 1 < len(indices) else indices[idx + 1:] if mode == "Matrix" else []
 
             for j in targets:
-                base_img = self.groups[i]["A"]
-                target_img = self.groups[j]["A"]
+                base_img, target_img = self.groups[i]["A"], self.groups[j]["A"]
                 
-                c_img = base_img.copy(); c_img.paste(target_img, (0,0), c_m)
-                d_img = base_img.copy(); d_img.paste(target_img, (0,0), d_m)
+                # Composite the Cap
+                c_img = base_img.copy()
+                c_img.paste(target_img, (0,0), c_m)
                 
-                # Filename fix: prefix + source + target + cap/diag + variant + mip
-                c_name = f"{prfx}{i}{j}cA0.MAP" 
-                d_name = f"{prfx}{i}{j}dA0.MAP"
+                # Composite the Diagonal
+                d_img = base_img.copy()
+                d_img.paste(target_img, (0,0), d_m)
+                
+                c_name = f"{prfx}{i}{j}cA0.MAP".upper()
+                d_name = f"{prfx}{i}{j}dA0.MAP".upper()
                 
                 baked_data.append((c_name, c_img))
                 baked_data.append((d_name, d_img))
                 trn_blocks[i]["transitions"].append((j, c_name, d_name))
 
-        # 3. Atlas Construction
-        gs = math.ceil(math.sqrt(len(baked_data) + 1))
+        # 3. Atlas Construction (FIXED: Zero-index alignment)
+        # Calculate grid size (gs)
+        gs = math.ceil(math.sqrt(len(baked_data)))
         at_res = gs * res 
         at_img = Image.new("RGBA", (at_res, at_res), (128, 128, 128, 255))
-        uv = res / at_res
-        csv_lines = [f",0.000,0.000,{uv:.3f},{uv:.3f}"]
+        
+        # Calculate clean UV step (e.g., 0.25 for 4x4)
+        uv_step = 1.0 / gs
+        
+        # Stock Format: The 'null' entry at the start of the CSV
+        csv_lines = [f",0,0,{uv_step:.6g},{uv_step:.6g}"]
         
         for idx, (name, img) in enumerate(baked_data):
-            pos = idx + 1
-            x, y = (pos % gs) * res, (pos // gs) * res
-            at_img.paste(img, (x, y))
-            csv_lines.append(f"{name},{x/at_res:.3f},{y/at_res:.3f},{uv:.3f},{uv:.3f}")
+            # Calculate grid position (Start at 0,0)
+            x_idx = idx % gs
+            y_idx = idx // gs
+            
+            x_pixel, y_pixel = x_idx * res, y_idx * res
+            at_img.paste(img, (x_pixel, y_pixel))
+            
+            # Use .6g for clean fractional formatting like stock EU
+            u = x_idx * uv_step
+            v = y_idx * uv_step
+            csv_lines.append(f"{name},{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
         
-        # 4. Export
-        if self.exp_png.get(): at_img.save(f"{prfx}_ATLAS_D.png")
+        # 4. Export Files
+        # --- PNG Atlas ---
+        if self.exp_png.get(): 
+            at_img.save(f"{prfx}_atlas_d.png")
+        
+        # --- CSV Mapping ---
         if self.exp_csv.get():
-            with open(f"{prfx}_ATLAS.csv", "w", newline='\r\n') as f: f.write("\n".join(csv_lines))
+            csv_path = f"{prfx}_detail_atlas.csv"
+            with open(csv_path, "w", newline='\r\n') as f:
+                f.write("\n".join(csv_lines))
+        
+        # --- Material File ---
+        mat_name = f"{prfx}_detail_atlas"
+        if self.exp_mat.get():
+            with open(f"{mat_name}.material", "w") as f:
+                f.write('import * from "BZTerrainBase.material"\n\n')
+                f.write(f'material {mat_name.upper()} : BZTerrainBase\n')
+                f.write('{\n')
+                f.write(f'\tset_texture_alias DiffuseMap {prfx}_atlas_d.dds\n')
+                f.write(f'\tset_texture_alias DetailMap {prfx}_detail.dds\n')
+                f.write(f'\tset_texture_alias NormalMap {prfx}_atlas_n.dds\n')
+                f.write(f'\tset_texture_alias SpecularMap {prfx}_atlas_s.dds\n')
+                f.write('\tset_texture_alias EmissiveMap black.dds\n\n')
+                f.write('\tset $diffuse "1 1 1"\n')
+                f.write('\tset $ambient "1 1 1"\n')
+                f.write('\tset $specular ".25 .25 .25"\n')
+                f.write('\tset $shininess "63"\n')
+                f.write('}\n')
+
+        # --- TRN Config (FIXED: Added [Atlases] block) ---
         if self.exp_trn.get():
-            with open(f"{prfx.upper()}_CONFIG.TRN", "w") as f:
+            trn_path = f"{prfx_upper}_CONFIG.TRN"
+            with open(trn_path, "w") as f:
+                f.write("[Atlases]\n")
+                f.write(f"MaterialName = {mat_name}\n\n")
+                
                 for idx in sorted(trn_blocks.keys()):
-                    f.write(f"\n[TextureType{idx}]\nFlatColor= 128\n")
-                    for slot, name in trn_blocks[idx]["solids"]: 
+                    f.write(f"[TextureType{idx}]\nFlatColor= 128\n")
+                    # Write Solids
+                    for slot, name in trn_blocks[idx]["solids"]:
                         f.write(f"Solid{slot}0 = {name}\n")
+                    # Write Transitions
                     for target, c_n, d_n in trn_blocks[idx]["transitions"]:
-                        f.write(f"CapTo{target}_A0 = {c_n}\nDiagonalTo{target}_A0 = {d_n}\n")
+                        f.write(f"CapTo{target}_A0 = {c_n}\n")
+                        f.write(f"DiagonalTo{target}_A0 = {d_n}\n")
                         
-        messagebox.showinfo("Export Done", f"Bundle generated at {at_res}x{at_res}!")
+        messagebox.showinfo("Export Done", f"World bundle generated for {prfx_upper}!\nGrid size: {gs}x{gs}")
 
 if __name__ == "__main__":
     root = tk.Tk(); app = BZ98TRNArchitect(root); root.mainloop()
