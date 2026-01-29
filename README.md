@@ -42,16 +42,16 @@ HOW TO USE THE ATLAS CREATOR
 <img width="1380" height="966" alt="image" src="https://github.com/user-attachments/assets/8b654843-9c7d-4501-9fec-71e8263bb4a8" />
 
 1. CUBEMAP GENERATOR
-   • INPUT: Requires 1 high resolution equirectangular HDRI projection image.
-   • Prefix: The naming convention your textures and materials will use.
-   • RESIZE: Forces all faces to matching powers of 2 (e.g., 1024px).
-   • DDS CONVERSION: Automatically exports faces into DDS format.(Recommended)
+   - INPUT: Requires 1 high resolution equirectangular HDRI projection image.
+   - Prefix: The naming convention your textures and materials will use.
+   - RESIZE: Forces all faces to matching powers of 2 (e.g., 1024px).
+   - DDS CONVERSION: Automatically exports faces into DDS format.(Recommended)
 
 2. HG2 CONVERTER
-   • RAW DATA: Reads Battlezone heightfield data (.hg2) and converts it to a visual heightmap.
-   • PRESETS: Match your map scale (e.g., Medium 5120m) to ensure correct aspect ratios.
+   - RAW DATA: Reads Battlezone heightfield data (.hg2) and converts it to a visual heightmap.
+   - PRESETS: Match your map scale (e.g., Medium 5120m) to ensure correct aspect ratios.
      This only applies when going PNG to HG2.
-   • BRIGHTNESS/CONTRAST: Adjust to expand the dynamic range of the terrain peaks/valleys.
+   - BRIGHTNESS/CONTRAST: Adjust to expand the dynamic range of the terrain peaks/valleys.
        Try defaults first.
-   • SMOOTHING: Runs a Gaussian pass to remove 'stair-stepping' on low-res terrain.
+   - SMOOTHING: Runs a Gaussian pass to remove 'stair-stepping' on low-res terrain.
 
