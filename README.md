@@ -39,7 +39,8 @@ HOW TO USE THE ATLAS CREATOR
      Note: This provides the texture tile entries ready for copy/paste into a TRN.
    - MATERIAL FILE: The Ogre script linking textures to shaders and aliases.
 
-<img width="1380" height="966" alt="image" src="https://github.com/user-attachments/assets/8b654843-9c7d-4501-9fec-71e8263bb4a8" />
+<img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/219ef619-b645-4682-a5b4-79adb9f99a3c" />
+
 
 1. CUBEMAP GENERATOR
    - INPUT: Requires 1 high resolution equirectangular HDRI projection image.
