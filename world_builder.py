@@ -62,10 +62,14 @@ class BZ98TRNArchitect:
         self.hg2_smooth_val = tk.IntVar(value=0)
 
         # Export Toggles
-        self.exp_png = tk.BooleanVar(value=True)
+        self.exp_png = tk.BooleanVar(value=False)
+        self.exp_dds = tk.BooleanVar(value=True)
         self.exp_csv = tk.BooleanVar(value=True)
         self.exp_trn = tk.BooleanVar(value=True)
         self.exp_mat = tk.BooleanVar(value=True)
+        self.exp_normal = tk.BooleanVar(value=False)
+        self.exp_specular = tk.BooleanVar(value=False)
+        self.exp_emissive = tk.BooleanVar(value=False)
         
         self.source_dir = ""
         self.groups = {} 
@@ -228,25 +232,40 @@ class BZ98TRNArchitect:
         self.notebook.add(self.tab_trn, text=" Atlas Creator ")
 
         # --- TAB 1 CONTROLS ---
-        ctrls = tk.Frame(self.tab_trn, padx=15, pady=15, width=350)
-        ctrls.pack(side="left", fill="y")
+        left_container = tk.Frame(self.tab_trn, width=360, bg="#f0f0f0")
+        left_container.pack(side="left", fill="y")
+        left_container.pack_propagate(False) 
 
-        tk.Label(ctrls, text="PLANET CONFIG", font=("Arial", 11, "bold")).pack(anchor="w")
+        canvas = tk.Canvas(left_container, highlightthickness=0, bg="#fdfdfd")
+        scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=canvas.yview)
+        ctrls = tk.Frame(canvas, padx=15, pady=15, bg="#fdfdfd")
+
+        ctrls.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=ctrls, anchor="nw", width=335)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # --- WIDGETS ---
+        tk.Label(ctrls, text="PLANET CONFIG", font=("Arial", 11, "bold"), bg="#fdfdfd").pack(anchor="w")
         tk.Entry(ctrls, textvariable=self.planet_var, width=10).pack(anchor="w", pady=2)
         
-        tk.Label(ctrls, text="DESIRED TILE SIZE:").pack(anchor="w", pady=(10,0))
+        tk.Label(ctrls, text="DESIRED TILE SIZE:", bg="#fdfdfd").pack(anchor="w", pady=(10,0))
         res_opts = [256, 512, 1024, 2048, 4096]
         self.res_dropdown = ttk.Combobox(ctrls, textvariable=self.tile_res_var, values=res_opts, state="readonly")
         self.res_dropdown.pack(fill="x", pady=5)
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=10)
 
-        tk.Label(ctrls, text="PATTERN ENGINE", font=("Arial", 11, "bold")).pack(anchor="w")
-        # tk.Checkbutton(ctrls, text="Synthetic Mode", variable=self.synthetic_mode, command=self.on_mode_change).pack(anchor="w")
+        tk.Label(ctrls, text="PATTERN ENGINE", font=("Arial", 11, "bold"), bg="#fdfdfd").pack(anchor="w")
         
-        tk.Label(ctrls, text="TRANSITION LOGIC:").pack(anchor="w", pady=(10,0))
-        ttk.Combobox(ctrls, textvariable=self.trans_mode_var, 
-             values=["Linear", "Matrix"], state="readonly").pack(fill="x", pady=5)
+        tk.Label(ctrls, text="TRANSITION LOGIC:", bg="#fdfdfd").pack(anchor="w", pady=(10,0))
+        ttk.Combobox(ctrls, textvariable=self.trans_mode_var, values=["Linear", "Matrix"], state="readonly").pack(fill="x", pady=5)
         
         self.style_dropdown = ttk.Combobox(ctrls, textvariable=self.style_var, state="readonly")
         self.style_dropdown.pack(fill="x", pady=5)
@@ -256,21 +275,40 @@ class BZ98TRNArchitect:
         self.create_fine_tune_slider(ctrls, "Random Jitter:", self.jitter_var, 0.0, 50.0, 0.5)
         self.create_fine_tune_slider(ctrls, "Feathering (Blur):", self.blend_softness, 0, 50, 1)
 
-        tk.Button(ctrls, text="🎲 NEW SEED", bg="#f0f0f0", command=self.cycle_seed).pack(fill="x", pady=5)
-        self.info_label = tk.Label(ctrls, text="Atlas Size: 0x0", fg="gray")
+        tk.Button(ctrls, text="🎲 NEW SEED", bg="#e0e0e0", command=self.cycle_seed).pack(fill="x", pady=5)
+        self.info_label = tk.Label(ctrls, text="Atlas Size: 0x0", fg="gray", bg="#fdfdfd")
         self.info_label.pack(fill="x", pady=5)
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=15)
-        tk.Checkbutton(ctrls, text="Export PNG", variable=self.exp_png).pack(anchor="w")
-        tk.Checkbutton(ctrls, text="Export CSV", variable=self.exp_csv).pack(anchor="w")
-        tk.Checkbutton(ctrls, text="Export TRN", variable=self.exp_trn).pack(anchor="w")
-        tk.Checkbutton(ctrls, text="Export MAT", variable=self.exp_mat).pack(anchor="w") # New UI toggle
 
-        tk.Button(ctrls, text="1. SELECT FOLDER", command=self.browse, bg="#9e9e9e", height=2).pack(fill="x", pady=(15,5))
-        # Small Tip Label
-        tk.Label(ctrls, text="💡 Tip: Folder should contain .dds or .png source textures\nnamed like S0.dds for solid 0, S1.dds for solid 1,\n or S0_B.dds for a variation of Solid 0.\nThe program will handle transitions so you only need solids texture sources.", 
-                 font=("Arial", 8, "italic"), fg="#757575", wraplength=300).pack(anchor="w", pady=(2, 5))
-        tk.Button(ctrls, text="2. BUILD ATLAS", command=self.generate, bg="#2e7d32", fg="white", font=("Arial", 10, "bold")).pack(fill="x")
+        # Output Settings
+        tk.Label(ctrls, text="OUTPUT OPTIONS", font=("Arial", 10, "bold"), bg="#fdfdfd").pack(anchor="w")
+        for text, var in [
+            ("Export PNG (Preview)", self.exp_png),
+            ("Export DDS (Production)", self.exp_dds),
+            ("Export Normal Map", self.exp_normal),
+            ("Export Specular Map", self.exp_specular),
+            ("Export Emissive Map", self.exp_emissive),
+            ("Export CSV Mapping", self.exp_csv),
+            ("Export .TRN Config", self.exp_trn),
+            ("Export .material File", self.exp_mat)
+        ]:
+            tk.Checkbutton(ctrls, text=text, variable=var, bg="#fdfdfd").pack(anchor="w")
+
+        ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=15)
+
+        # 1. SOURCE SELECT
+        tk.Button(ctrls, text="1. SELECT SOURCE FOLDER", command=self.browse, bg="#9e9e9e", height=1).pack(fill="x", pady=(0,5))
+        
+        # 2. OUTPUT SELECT (NEW)
+        tk.Label(ctrls, text="OUTPUT DESTINATION:", font=("Arial", 8, "bold"), bg="#fdfdfd").pack(anchor="w")
+        out_f = tk.Frame(ctrls, bg="#fdfdfd")
+        out_f.pack(fill="x", pady=2)
+        self.out_dir_var = tk.StringVar(value="Export")
+        tk.Entry(out_f, textvariable=self.out_dir_var, font=("Arial", 8)).pack(side="left", fill="x", expand=True)
+        tk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
+
+        tk.Button(ctrls, text="2. BUILD ATLAS", command=self.generate, bg="#2e7d32", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill="x", pady=(15, 20))
 
         # --- TAB 1 PREVIEW ---
         pre_frame = tk.Frame(self.tab_trn, bg="#111")
@@ -278,12 +316,42 @@ class BZ98TRNArchitect:
         self.canvas = tk.Canvas(pre_frame, bg="#1a1a1a", highlightthickness=0)
         self.canvas.pack(side="left", expand=True, fill="both")
 
-        # 3. Setup TAB 2 (World Builder Tools)
         self.tab_world = tk.Frame(self.notebook)
         self.notebook.add(self.tab_world, text=" World Builder Tools ")
         self.setup_world_tab()
-
         self.on_mode_change()
+
+    def browse_output(self):
+        d = filedialog.askdirectory()
+        if d: self.out_dir_var.set(d)
+        
+    def generate_normal_map(self, image, strength=1.0):
+        """Converts a grayscale heightmap version of the atlas into a Tangent Space Normal Map."""
+        gray = ImageOps.grayscale(image)
+        arr = np.array(gray).astype(np.float32)
+        
+        # Sobel Operators
+        dx = np.zeros_like(arr)
+        dy = np.zeros_like(arr)
+        dx[:, 1:-1] = (arr[:, 2:] - arr[:, :-2]) * strength
+        dy[1:-1, :] = (arr[2:, :] - arr[:-2, :]) * strength
+        
+        # Normalize to 0-255 range for RGB (Normal maps use 128,128,255 as flat)
+        mag = np.sqrt(dx**2 + dy**2 + 100.0**2)
+        nx = (dx / mag) * 127.5 + 127.5
+        ny = (dy / mag) * 127.5 + 127.5
+        nz = (100.0 / mag) * 127.5 + 127.5
+        
+        norm_arr = np.stack([nx, ny, nz], axis=-1).astype(np.uint8)
+        return Image.fromarray(norm_arr)
+
+    def generate_specular_map(self, image):
+        """Generates a Specular/Roughness map based on luminosity and contrast."""
+        # Convert to grayscale and increase contrast to separate shiny/matte areas
+        spec = ImageOps.grayscale(image)
+        enhancer = ImageEnhance.Contrast(spec)
+        spec = enhancer.enhance(1.5) 
+        return spec
 
     def setup_world_tab(self):
         container = tk.Frame(self.tab_world, padx=20, pady=20)
@@ -913,34 +981,56 @@ class BZ98TRNArchitect:
             v = y_idx * uv_step
             csv_lines.append(f"{name},{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
         
-        # 4. Export Files
-        # --- PNG Atlas ---
-        if self.exp_png.get(): 
-            at_img.save(f"{prfx}_atlas_d.png")
-        
-        # --- CSV Mapping ---
-        if self.exp_csv.get():
-            csv_path = f"{prfx}_detail_atlas.csv"
-            with open(csv_path, "w", newline='\r\n') as f:
-                f.write("\n".join(csv_lines))
-        
-        # --- Material File ---
-        mat_name = f"{prfx}_detail_atlas"
+# --- 4. Final Export & Map Generation ---
+        out_dir = self.out_dir_var.get()
+        if not os.path.exists(out_dir): os.makedirs(out_dir)
+
+        def save_map_asset(img, suffix):
+            base_filename = f"{prfx}_atlas_{suffix}"
+            ext = ".dds" if self.exp_dds.get() else ".png"
+            
+            if self.exp_png.get():
+                img.save(os.path.join(out_dir, base_filename + ".png"))
+            
+            if self.exp_dds.get():
+                img.save(os.path.join(out_dir, base_filename + ".dds"))
+                
+            return base_filename + ext
+
+        # Map Dictionary for Material Aliases
+        maps_to_write = {"DiffuseMap": save_map_asset(at_img, "d")}
+
+        # Normal Map
+        if self.exp_normal.get():
+            maps_to_write["NormalMap"] = save_map_asset(self.generate_normal_map(at_img), "n")
+
+        # Specular Map
+        if self.exp_specular.get():
+            maps_to_write["SpecularMap"] = save_map_asset(self.generate_specular_map(at_img), "s")
+
+        # Full Color Emissive Map
+        if self.exp_emissive.get():
+            # Create a mask from brightness (>220)
+            mask = at_img.convert("L").point(lambda p: 255 if p > 220 else 0)
+            # Create a black background the same size
+            black_bg = Image.new("RGB", at_img.size, (0, 0, 0))
+            # Paste original colors through the mask
+            em_color = Image.composite(at_img, black_bg, mask)
+            maps_to_write["EmissiveMap"] = save_map_asset(em_color, "e")
+        else:
+            maps_to_write["EmissiveMap"] = "black.dds"
+
+        # --- Material File Generation ---
         if self.exp_mat.get():
-            with open(f"{mat_name}.material", "w") as f:
+            mat_filename = f"{prfx}_detail_atlas"
+            with open(os.path.join(out_dir, f"{mat_filename}.material"), "w") as f:
                 f.write('import * from "BZTerrainBase.material"\n\n')
-                f.write(f'material {mat_name.upper()} : BZTerrainBase\n')
-                f.write('{\n')
-                f.write(f'\tset_texture_alias DiffuseMap {prfx}_atlas_d.dds\n')
+                f.write(f'material {mat_filename.upper()} : BZTerrainBase\n{{\n')
+                for alias, filename in maps_to_write.items():
+                    f.write(f'\tset_texture_alias {alias} {filename}\n')
                 f.write(f'\tset_texture_alias DetailMap {prfx}_detail.dds\n')
-                f.write(f'\tset_texture_alias NormalMap {prfx}_atlas_n.dds\n')
-                f.write(f'\tset_texture_alias SpecularMap {prfx}_atlas_s.dds\n')
-                f.write('\tset_texture_alias EmissiveMap black.dds\n\n')
-                f.write('\tset $diffuse "1 1 1"\n')
-                f.write('\tset $ambient "1 1 1"\n')
-                f.write('\tset $specular ".25 .25 .25"\n')
-                f.write('\tset $shininess "63"\n')
-                f.write('}\n')
+                f.write('\n\tset $diffuse "1 1 1"\n\tset $ambient "1 1 1"\n')
+                f.write('\tset $specular ".25 .25 .25"\n\tset $shininess "63"\n}\n')
 
         # --- TRN Config (FIXED: Added [Atlases] block) ---
         if self.exp_trn.get():
