@@ -19,7 +19,6 @@ class BZ98TRNArchitect:
         # Initialize variables first to prevent AttributeErrors
         self.sky_prefix_var = tk.StringVar(value="pmars")
         self.hg2_path = tk.StringVar() 
-        self.planet_var = tk.StringVar(value="AC")
         
 # Use self. to make it an instance attribute
         self.map_presets = [
@@ -43,14 +42,14 @@ class BZ98TRNArchitect:
         self.blend_softness = tk.IntVar(value=0)
         self.seed_var = tk.IntVar(value=random.randint(0, 99999))
         self.sky_input_path = tk.StringVar()
-        self.sky_out_res = tk.IntVar(value=1024)
-        self.zoom_level = 1.0
+        self.sky_out_res = tk.IntVar(value=2048)
+        self.zoom_level = 0.25
         self.trans_mode_var = tk.StringVar(value="Linear")
         self.trans_mode_var.trace_add("write", self.update_preview)
         self.trans_mode_var.trace_add("write", lambda *args: self.update_preview())
         self.style_var.trace_add("write", lambda *args: self.update_preview())
         
-        self.export_dds = tk.BooleanVar(value=False)
+        self.export_dds = tk.BooleanVar(value=True)
         self.export_mat = tk.BooleanVar(value=True)
         self.export_trn = tk.BooleanVar(value=True)
         
@@ -78,7 +77,86 @@ class BZ98TRNArchitect:
 
         self.setup_ui()
         self.bind_events()
-        
+    
+    def setup_help_tab(self):
+        container = tk.Frame(self.tab_help, padx=30, pady=30, bg="#fdfdfd")
+        container.pack(fill="both", expand=True)
+
+        tk.Label(container, text="World Builder Suite Guide", font=("Arial", 16, "bold"), bg="#fdfdfd").pack(anchor="w", pady=(0, 20))
+
+        # Main horizontal split
+        columns_frame = tk.Frame(container, bg="#fdfdfd")
+        columns_frame.pack(fill="both", expand=True)
+
+        # --- COLUMN 1: ATLAS CREATOR (LEFT) ---
+        left_col = tk.Frame(columns_frame, bg="#fdfdfd")
+        left_col.pack(side="left", fill="both", expand=True, padx=(0, 20))
+
+        tk.Label(left_col, text="ATLAS CREATOR", font=("Arial", 11, "bold"), bg="#fdfdfd", fg="#2e7d32").pack(anchor="w")
+        help_box_left = tk.Text(left_col, font=("Arial", 10), bg="#fdfdfd", relief="flat", wrap="word")
+        help_box_left.pack(fill="both", expand=True, pady=10)
+
+        atlas_guide = (
+            "HOW TO USE THE ATLAS CREATOR\n\n"
+            "1. NAVIGATION TIPS\n"
+            "   - PREVIEW PAN: Click and drag with the Left Mouse Button to move the atlas preview.\n"
+            "   - PREVIEW ZOOM: Use the Mouse Wheel to zoom in and out of the texture tiles.\n"
+            "   - CONTROL PANEL: If the options on the left are cut off, use the Scroll Wheel or the \n"
+            "     scrollbar on the far left edge to reveal the 'Build' button.\n\n"
+            "2. PREPARE SOURCE TEXTURES\n"
+            "   - Place your solid textures in a single folder.\n"
+            "   - Name them S0.dds (or PNG), S1.dds, S2.dds, etc. (up to S9).\n"
+            "   - Variations (e.g., S0_B.dds) are automatically used for randomization.\n\n"
+            "3. TRANSITION LOGIC (Quantity of Tiles)\n"
+            "   - LINEAR: Creates a sequence. S0 links to S1, S1 links to S2, etc. Best for biomes.\n"
+            "   - MATRIX: Creates every possible combination. Every S# links to every other S#.\n\n"
+            "4. PATTERN ENGINE (The 'Look')\n"
+            "   - STYLE: Sets the visual transition shape (e.g., 'Square/Blocky' for tech, 'Soft Clouds').\n"
+            "   - EDGE DEPTH: How far the transition effect reaches into the solid tiles.\n"
+            "   - FREQUENCY: The density of the transition pattern (Teeth per size).\n"
+            "   - JITTER: Adds random offset to edges for a less uniform, 'hand-painted' feel.\n"
+            "   - FEATHERING: Applies a blur filter to the transition mask for smoother blends.\n"
+            "   - NEW SEED: Randomizes the jitter and pattern noise for the current settings.\n\n"
+            "5. MAP GENERATION\n"
+            "   - NORMAL MAP: Creates a 'Smart' depth map using a Sobel operator on color data.\n"
+            "   - SPECULAR MAP: Creates high-contrast gloss mapping based on pixel luminosity.\n"
+            "   - EMISSIVE MAP: Isolates bright colors (threshold > 220) to create glow assets.\n\n"
+            "6. EXPORT FILES\n"
+            "   - CSV MAPPING: A manifest identifying which tile is which for internal tools.\n"
+            "   - TRN CONFIG: The terrain configuration file defining TextureTypes for the engine.\n"
+            "     Note: This provides the texture tile entries ready for copy/paste into a TRN.\n"
+            "   - MATERIAL FILE: The Ogre script linking textures to shaders and aliases."
+        )
+        help_box_left.insert("1.0", atlas_guide)
+        help_box_left.config(state="disabled")
+
+        # --- COLUMN 2: WORLD TOOLS (RIGHT) ---
+        right_col = tk.Frame(columns_frame, bg="#fdfdfd")
+        right_col.pack(side="right", fill="both", expand=True, padx=(20, 0))
+
+        tk.Label(right_col, text="WORLD BUILDER TOOLS", font=("Arial", 11, "bold"), bg="#fdfdfd", fg="#1976d2").pack(anchor="w")
+        help_box_right = tk.Text(right_col, font=("Arial", 10), bg="#fdfdfd", relief="flat", wrap="word")
+        help_box_right.pack(fill="both", expand=True, pady=10)
+
+        tools_guide = (
+            "1. CUBEMAP GENERATOR\n"
+            "   • INPUT: Requires 1 high resolution equirectangular HDRI projection image.\n"
+            "   • Prefix: The naming convention your textures and materials will use.\n"
+            "   • RESIZE: Forces all faces to matching powers of 2 (e.g., 1024px).\n"
+            "   • DDS CONVERSION: Automatically exports faces into DDS format.(Recommended)\n\n"
+            "2. HG2 CONVERTER\n"
+            "   • RAW DATA: Reads Battlezone heightfield data (.hg2) and converts it to a visual heightmap.\n"
+            "   • PRESETS: Match your map scale (e.g., Medium 5120m) to ensure correct aspect ratios.\n     This only applies when going PNG to HG2.\n"
+            "   • BRIGHTNESS/CONTRAST: Adjust to expand the dynamic range of the terrain peaks/valleys.\n       Try defaults first.\n"
+            "   • SMOOTHING: Runs a Gaussian pass to remove 'stair-stepping' on low-res terrain.\n\n"
+        )
+        help_box_right.insert("1.0", tools_guide)
+        help_box_right.config(state="disabled")
+
+        # Footer
+        tk.Label(container, text="BZ98R World Builder | Developed by GrizzlyOne95", 
+                 font=("Arial", 8, "italic"), fg="gray", bg="#fdfdfd").pack(side="bottom", anchor="w")
+    
     def browse_hg2(self):
         path = filedialog.askopenfilename(filetypes=[("Heightmaps", "*.hg2 *.png *.bmp")])
         if path:
@@ -246,6 +324,12 @@ class BZ98TRNArchitect:
 
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
+        
+# --- HELP BUTTON ---
+        help_btn_frame = tk.Frame(ctrls, bg="#fdfdfd")
+        help_btn_frame.pack(fill="x", pady=(0, 10))
+        tk.Button(help_btn_frame, text="❓ About / Help", font=("Arial", 8, "bold"), 
+                  command=lambda: self.notebook.select(self.tab_help)).pack(side="right")
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
@@ -315,11 +399,16 @@ class BZ98TRNArchitect:
         pre_frame.pack(side="right", expand=True, fill="both")
         self.canvas = tk.Canvas(pre_frame, bg="#1a1a1a", highlightthickness=0)
         self.canvas.pack(side="left", expand=True, fill="both")
-
+        # --- WORLD BUILDER TOOLS TAB
         self.tab_world = tk.Frame(self.notebook)
         self.notebook.add(self.tab_world, text=" World Builder Tools ")
         self.setup_world_tab()
         self.on_mode_change()
+        
+        # 4. Setup TAB 3 (Help)
+        self.tab_help = tk.Frame(self.notebook, bg="#fdfdfd")
+        self.notebook.add(self.tab_help, text=" Help & About ")
+        self.setup_help_tab()
 
     def browse_output(self):
         d = filedialog.askdirectory()
