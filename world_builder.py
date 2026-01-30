@@ -1,5 +1,8 @@
 import os
+import sys
+import ctypes
 import math
+import threading
 import random
 import re
 import numpy as np
@@ -10,11 +13,19 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk, ImageOps, ImageEnhance
 from scipy.ndimage import map_coordinates
 
+# --- BATTLEZONE HUD COLORS ---
+BZ_BG = "#0a0a0a"
+BZ_FG = "#d4d4d4"
+BZ_GREEN = "#00ff00"
+BZ_DARK_GREEN = "#004400"
+BZ_CYAN = "#00ffff"
+
 class BZ98TRNArchitect:
     def __init__(self, root):
         self.root = root # Keep reference to main root
-        self.root.title("BZ98 Redux: World Builder Suite (V3.3)")
+        self.root.title("BZ98 Redux: World Builder Suite")
         self.root.geometry("1400x950")
+        self.root.configure(bg=BZ_BG)
         
         # Initialize variables first to prevent AttributeErrors
         self.sky_prefix_var = tk.StringVar(value="pmars")
@@ -75,25 +86,80 @@ class BZ98TRNArchitect:
         self.full_atlas_preview = None
         self.preview_tk = None
 
+        # Font/Icon logic
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+            self.resource_dir = sys._MEIPASS
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.resource_dir = self.base_dir
+            
+        font_path = os.path.join(self.resource_dir, "bzone.ttf")
+        if os.path.exists(font_path):
+            self.custom_font_name = "BZONE"
+            try: ctypes.windll.gdi32.AddFontResourceExW(font_path, 0x10, 0)
+            except: pass
+        else:
+            self.custom_font_name = "Consolas"
+
+        icon_path = os.path.join(self.resource_dir, "modman.ico")
+        if os.path.exists(icon_path):
+            try: self.root.iconbitmap(icon_path)
+            except: pass
+
+        try:
+            self.resample_method = Image.Resampling.LANCZOS
+        except AttributeError:
+            self.resample_method = Image.LANCZOS
+
+        self.setup_styles()
         self.setup_ui()
         self.bind_events()
+
+    def setup_styles(self):
+        style = ttk.Style()
+        style.theme_use('default')
+        main_font = (self.custom_font_name, 10)
+        bold_font = (self.custom_font_name, 11, "bold")
+
+        # --- GLOBAL STYLES ---
+        style.configure(".", background=BZ_BG, foreground=BZ_FG, font=main_font, bordercolor=BZ_DARK_GREEN)
+        style.configure("TFrame", background=BZ_BG)
+        style.configure("TNotebook", background=BZ_BG, borderwidth=0)
+        style.configure("TNotebook.Tab", background="#1a1a1a", foreground=BZ_FG, padding=[10, 2])
+        style.map("TNotebook.Tab", background=[("selected", BZ_DARK_GREEN)], foreground=[("selected", BZ_GREEN)])
+        style.configure("TLabelframe", background=BZ_BG, bordercolor=BZ_GREEN)
+        style.configure("TLabelframe.Label", background=BZ_BG, foreground=BZ_GREEN, font=bold_font)
+        style.configure("TLabel", background=BZ_BG, foreground=BZ_FG)
+        style.configure("TEntry", fieldbackground="#1a1a1a", foreground=BZ_CYAN, insertcolor=BZ_GREEN)
+        style.configure("TButton", background="#1a1a1a", foreground=BZ_FG)
+        style.map("TButton", background=[("active", BZ_DARK_GREEN)], foreground=[("active", BZ_GREEN)])
+        style.configure("Success.TButton", foreground=BZ_GREEN, font=bold_font)
+        style.configure("Action.TButton", foreground=BZ_CYAN, font=bold_font)
+        style.configure("Vertical.TScrollbar", background="#1a1a1a", troughcolor=BZ_BG, arrowcolor=BZ_GREEN)
+        style.configure("TCheckbutton", background=BZ_BG, foreground=BZ_FG, indicatorcolor=BZ_BG, indicatoron=True)
+        style.map("TEntry", fieldbackground=[("readonly", "#1a1a1a")], foreground=[("readonly", BZ_CYAN)])
+        style.configure("TCombobox", fieldbackground="#1a1a1a", foreground=BZ_CYAN, arrowcolor=BZ_GREEN)
+        style.map("TCombobox", fieldbackground=[("readonly", "#1a1a1a")], foreground=[("readonly", BZ_CYAN)])
+        style.configure("TMenubutton", background="#1a1a1a", foreground=BZ_CYAN)
+        style.map("TMenubutton", background=[("active", BZ_DARK_GREEN)], foreground=[("active", BZ_GREEN)])
     
     def setup_help_tab(self):
-        container = tk.Frame(self.tab_help, padx=30, pady=30, bg="#fdfdfd")
+        container = ttk.Frame(self.tab_help, padding=30)
         container.pack(fill="both", expand=True)
 
-        tk.Label(container, text="World Builder Suite Guide", font=("Arial", 16, "bold"), bg="#fdfdfd").pack(anchor="w", pady=(0, 20))
+        ttk.Label(container, text="World Builder Suite Guide", font=(self.custom_font_name, 16, "bold")).pack(anchor="w", pady=(0, 20))
 
         # Main horizontal split
-        columns_frame = tk.Frame(container, bg="#fdfdfd")
+        columns_frame = ttk.Frame(container)
         columns_frame.pack(fill="both", expand=True)
 
         # --- COLUMN 1: ATLAS CREATOR (LEFT) ---
-        left_col = tk.Frame(columns_frame, bg="#fdfdfd")
+        left_col = ttk.Frame(columns_frame)
         left_col.pack(side="left", fill="both", expand=True, padx=(0, 20))
 
-        tk.Label(left_col, text="ATLAS CREATOR", font=("Arial", 11, "bold"), bg="#fdfdfd", fg="#2e7d32").pack(anchor="w")
-        help_box_left = tk.Text(left_col, font=("Arial", 10), bg="#fdfdfd", relief="flat", wrap="word")
+        ttk.Label(left_col, text="ATLAS CREATOR", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        help_box_left = tk.Text(left_col, font=("Consolas", 10), bg="#050505", fg=BZ_FG, relief="flat", wrap="word", insertbackground=BZ_GREEN)
         help_box_left.pack(fill="both", expand=True, pady=10)
 
         atlas_guide = (
@@ -131,11 +197,11 @@ class BZ98TRNArchitect:
         help_box_left.config(state="disabled")
 
         # --- COLUMN 2: WORLD TOOLS (RIGHT) ---
-        right_col = tk.Frame(columns_frame, bg="#fdfdfd")
+        right_col = ttk.Frame(columns_frame)
         right_col.pack(side="right", fill="both", expand=True, padx=(20, 0))
 
-        tk.Label(right_col, text="WORLD BUILDER TOOLS", font=("Arial", 11, "bold"), bg="#fdfdfd", fg="#1976d2").pack(anchor="w")
-        help_box_right = tk.Text(right_col, font=("Arial", 10), bg="#fdfdfd", relief="flat", wrap="word")
+        ttk.Label(right_col, text="WORLD BUILDER TOOLS", font=(self.custom_font_name, 11, "bold"), foreground=BZ_CYAN).pack(anchor="w")
+        help_box_right = tk.Text(right_col, font=("Consolas", 10), bg="#050505", fg=BZ_FG, relief="flat", wrap="word", insertbackground=BZ_GREEN)
         help_box_right.pack(fill="both", expand=True, pady=10)
 
         tools_guide = (
@@ -154,8 +220,8 @@ class BZ98TRNArchitect:
         help_box_right.config(state="disabled")
 
         # Footer
-        tk.Label(container, text="BZ98R World Builder | Developed by GrizzlyOne95", 
-                 font=("Arial", 8, "italic"), fg="gray", bg="#fdfdfd").pack(side="bottom", anchor="w")
+        ttk.Label(container, text="BZ98R World Builder | Developed by GrizzlyOne95", 
+                 font=(self.custom_font_name, 8, "italic"), foreground="#666666").pack(side="bottom", anchor="w")
     
     def browse_hg2(self):
         path = filedialog.askopenfilename(filetypes=[("Heightmaps", "*.hg2 *.png *.bmp")])
@@ -179,6 +245,7 @@ class BZ98TRNArchitect:
         if not path or not os.path.exists(path):
             return
         
+        self.btn_hg2_png.config(text="CONVERTING...", state="disabled")
         try:
             with open(path, "rb") as f:
                 header = f.read(12)
@@ -213,21 +280,35 @@ class BZ98TRNArchitect:
                 out_img = out_img.transpose(Image.ROTATE_90)
 
                 out_img.save(out_path)
-                messagebox.showinfo("Success", f"Converted & Rotated 90° CCW\nRes: {out_img.width}x{out_img.height}")
+                self.root.after(0, lambda: messagebox.showinfo("Success", f"Converted & Rotated 90° CCW\nRes: {out_img.width}x{out_img.height}"))
         except Exception as e:
-            messagebox.showerror("Error", f"Conversion failed: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Conversion failed: {e}"))
+        finally:
+            self.root.after(0, lambda: self.btn_hg2_png.config(text="HG2 -> PNG", state="normal"))
 
     def convert_png_to_hg2(self):
         path = self.hg2_path.get()
         if not path or not os.path.exists(path): return
         
+        cfg = {
+            "path": path,
+            "zw": getattr(self, 'hg2_target_zw', tk.IntVar(value=8)).get(),
+            "zl": getattr(self, 'hg2_target_zl', tk.IntVar(value=8)).get(),
+            "brightness": self.hg2_brightness.get() if hasattr(self, 'hg2_brightness') else 1.0,
+            "contrast": self.hg2_contrast.get() if hasattr(self, 'hg2_contrast') else 1.0,
+            "smooth": self.hg2_smooth_val.get() if hasattr(self, 'hg2_smooth_val') else 0
+        }
+        self.btn_png_hg2.config(text="CONVERTING...", state="disabled")
+        threading.Thread(target=self._convert_png_to_hg2_worker, args=(cfg,), daemon=True).start()
+
+    def _convert_png_to_hg2_worker(self, cfg):
         try:
             # 1. Load the 16-bit PNG
-            img = Image.open(path).convert("I;16")
+            img = Image.open(cfg["path"]).convert("I;16")
             
             # 2. Dynamic Dimensions Calculation
-            z_w = getattr(self, 'hg2_target_zw', tk.IntVar(value=8)).get()
-            z_l = getattr(self, 'hg2_target_zl', tk.IntVar(value=8)).get()
+            z_w = cfg["zw"]
+            z_l = cfg["zl"]
             
             # Calculate zone_size based on image width and number of zones
             # This prevents the 512 -> 2048 scaling issue
@@ -242,16 +323,14 @@ class BZ98TRNArchitect:
             
             # 4. Apply Adjusters (Brightness/Contrast/Smoothing)
             arr = np.array(img).astype(np.float32)
-            if hasattr(self, 'hg2_brightness'):
-                arr *= self.hg2_brightness.get()
-            if hasattr(self, 'hg2_contrast'):
-                mean = 32768.0
-                arr = (arr - mean) * self.hg2_contrast.get() + mean
+            arr *= cfg["brightness"]
+            mean = 32768.0
+            arr = (arr - mean) * cfg["contrast"] + mean
             
             # Smoothing fix for Pillow mode compatibility
-            if hasattr(self, 'hg2_smooth_val') and self.hg2_smooth_val.get() > 0:
+            if cfg["smooth"] > 0:
                 img_proc = Image.fromarray((arr / 256).astype(np.uint8)).convert("RGB")
-                img_proc = img_proc.filter(ImageFilter.GaussianBlur(self.hg2_smooth_val.get()))
+                img_proc = img_proc.filter(ImageFilter.GaussianBlur(cfg["smooth"]))
                 img_final_arr = np.array(img_proc.convert("L")).astype(np.float32) * 256
             else:
                 img_final_arr = arr
@@ -271,22 +350,24 @@ class BZ98TRNArchitect:
                     zone = img_final_arr[zy*zone_size : (zy+1)*zone_size, zx*zone_size : (zx+1)*zone_size]
                     output_data.extend(zone.tobytes())
             
-            out_path = path.rsplit('.', 1)[0] + "_export.hg2"
+            out_path = cfg["path"].rsplit('.', 1)[0] + "_export.hg2"
             with open(out_path, "wb") as f:
                 f.write(header)
                 f.write(output_data)
                     
-            messagebox.showinfo("Success", f"Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})")
+            self.root.after(0, lambda: messagebox.showinfo("Success", f"Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})"))
             
         except Exception as e:
-            messagebox.showerror("Error", f"Failed to save HG2: {e}")
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to save HG2: {e}"))
+        finally:
+            self.root.after(0, lambda: self.btn_png_hg2.config(text="PNG -> HG2", state="normal"))
         
     # --- THE MISSING METHOD ---
     def create_fine_tune_slider(self, parent, label, var, from_, to, res=1.0):
-        frame = tk.Frame(parent)
+        frame = ttk.Frame(parent)
         frame.pack(fill="x", pady=2)
-        tk.Label(frame, text=label, font=("Arial", 9)).pack(side="top", anchor="w")
-        inner = tk.Frame(frame)
+        ttk.Label(frame, text=label, font=(self.custom_font_name, 9)).pack(side="top", anchor="w")
+        inner = ttk.Frame(frame)
         inner.pack(fill="x")
         
         def adjust(delta):
@@ -294,11 +375,12 @@ class BZ98TRNArchitect:
             var.set(round(max(from_, min(to, val)), 3))
             self.update_preview()
 
-        tk.Button(inner, text="<", command=lambda: adjust(-res), width=2).pack(side="left")
+        ttk.Button(inner, text="<", command=lambda: adjust(-res), width=2).pack(side="left")
         scale = tk.Scale(inner, from_=from_, to=to, resolution=res, orient="horizontal", 
-                         variable=var, command=self.force_refresh, showvalue=True)
+                         variable=var, command=self.force_refresh, showvalue=True,
+                         bg=BZ_BG, fg=BZ_FG, troughcolor="#1a1a1a", activebackground=BZ_GREEN, highlightthickness=0)
         scale.pack(side="left", fill="x", expand=True)
-        tk.Button(inner, text=">", command=lambda: adjust(res), width=2).pack(side="left")
+        ttk.Button(inner, text=">", command=lambda: adjust(res), width=2).pack(side="left")
 
     def setup_ui(self):
         # 1. Create Notebook
@@ -306,17 +388,17 @@ class BZ98TRNArchitect:
         self.notebook.pack(expand=True, fill="both")
 
         # 2. Setup TAB 1 (Atlas Generator)
-        self.tab_trn = tk.Frame(self.notebook)
+        self.tab_trn = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_trn, text=" Atlas Creator ")
 
         # --- TAB 1 CONTROLS ---
-        left_container = tk.Frame(self.tab_trn, width=360, bg="#f0f0f0")
+        left_container = ttk.Frame(self.tab_trn, width=360)
         left_container.pack(side="left", fill="y")
         left_container.pack_propagate(False) 
 
-        canvas = tk.Canvas(left_container, highlightthickness=0, bg="#fdfdfd")
-        scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=canvas.yview)
-        ctrls = tk.Frame(canvas, padx=15, pady=15, bg="#fdfdfd")
+        canvas = tk.Canvas(left_container, highlightthickness=0, bg=BZ_BG)
+        scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=canvas.yview, style="Vertical.TScrollbar")
+        ctrls = ttk.Frame(canvas, padding=15)
 
         ctrls.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=ctrls, anchor="nw", width=335)
@@ -326,9 +408,9 @@ class BZ98TRNArchitect:
         canvas.pack(side="left", fill="both", expand=True)
         
 # --- HELP BUTTON ---
-        help_btn_frame = tk.Frame(ctrls, bg="#fdfdfd")
+        help_btn_frame = ttk.Frame(ctrls)
         help_btn_frame.pack(fill="x", pady=(0, 10))
-        tk.Button(help_btn_frame, text="❓ About / Help", font=("Arial", 8, "bold"), 
+        ttk.Button(help_btn_frame, text="❓ About / Help", 
                   command=lambda: self.notebook.select(self.tab_help)).pack(side="right")
 
         def _on_mousewheel(event):
@@ -336,19 +418,19 @@ class BZ98TRNArchitect:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # --- WIDGETS ---
-        tk.Label(ctrls, text="PLANET CONFIG", font=("Arial", 11, "bold"), bg="#fdfdfd").pack(anchor="w")
-        tk.Entry(ctrls, textvariable=self.planet_var, width=10).pack(anchor="w", pady=2)
+        ttk.Label(ctrls, text="PLANET CONFIG", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        ttk.Entry(ctrls, textvariable=self.planet_var, width=10).pack(anchor="w", pady=2)
         
-        tk.Label(ctrls, text="DESIRED TILE SIZE:", bg="#fdfdfd").pack(anchor="w", pady=(10,0))
+        ttk.Label(ctrls, text="DESIRED TILE SIZE:").pack(anchor="w", pady=(10,0))
         res_opts = [256, 512, 1024, 2048, 4096]
         self.res_dropdown = ttk.Combobox(ctrls, textvariable=self.tile_res_var, values=res_opts, state="readonly")
         self.res_dropdown.pack(fill="x", pady=5)
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=10)
 
-        tk.Label(ctrls, text="PATTERN ENGINE", font=("Arial", 11, "bold"), bg="#fdfdfd").pack(anchor="w")
+        ttk.Label(ctrls, text="PATTERN ENGINE", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
         
-        tk.Label(ctrls, text="TRANSITION LOGIC:", bg="#fdfdfd").pack(anchor="w", pady=(10,0))
+        ttk.Label(ctrls, text="TRANSITION LOGIC:").pack(anchor="w", pady=(10,0))
         ttk.Combobox(ctrls, textvariable=self.trans_mode_var, values=["Linear", "Matrix"], state="readonly").pack(fill="x", pady=5)
         
         self.style_dropdown = ttk.Combobox(ctrls, textvariable=self.style_var, state="readonly")
@@ -359,14 +441,14 @@ class BZ98TRNArchitect:
         self.create_fine_tune_slider(ctrls, "Random Jitter:", self.jitter_var, 0.0, 50.0, 0.5)
         self.create_fine_tune_slider(ctrls, "Feathering (Blur):", self.blend_softness, 0, 50, 1)
 
-        tk.Button(ctrls, text="🎲 NEW SEED", bg="#e0e0e0", command=self.cycle_seed).pack(fill="x", pady=5)
-        self.info_label = tk.Label(ctrls, text="Atlas Size: 0x0", fg="gray", bg="#fdfdfd")
+        ttk.Button(ctrls, text="🎲 NEW SEED", command=self.cycle_seed).pack(fill="x", pady=5)
+        self.info_label = ttk.Label(ctrls, text="Atlas Size: 0x0", foreground="#666666")
         self.info_label.pack(fill="x", pady=5)
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=15)
 
         # Output Settings
-        tk.Label(ctrls, text="OUTPUT OPTIONS", font=("Arial", 10, "bold"), bg="#fdfdfd").pack(anchor="w")
+        ttk.Label(ctrls, text="OUTPUT OPTIONS", font=(self.custom_font_name, 10, "bold"), foreground=BZ_GREEN).pack(anchor="w")
         for text, var in [
             ("Export PNG (Preview)", self.exp_png),
             ("Export DDS (Production)", self.exp_dds),
@@ -377,36 +459,37 @@ class BZ98TRNArchitect:
             ("Export .TRN Config", self.exp_trn),
             ("Export .material File", self.exp_mat)
         ]:
-            tk.Checkbutton(ctrls, text=text, variable=var, bg="#fdfdfd").pack(anchor="w")
+            ttk.Checkbutton(ctrls, text=text, variable=var).pack(anchor="w")
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=15)
 
         # 1. SOURCE SELECT
-        tk.Button(ctrls, text="1. SELECT SOURCE FOLDER", command=self.browse, bg="#9e9e9e", height=1).pack(fill="x", pady=(0,5))
+        ttk.Button(ctrls, text="1. SELECT SOURCE FOLDER", command=self.browse).pack(fill="x", pady=(0,5))
         
         # 2. OUTPUT SELECT (NEW)
-        tk.Label(ctrls, text="OUTPUT DESTINATION:", font=("Arial", 8, "bold"), bg="#fdfdfd").pack(anchor="w")
-        out_f = tk.Frame(ctrls, bg="#fdfdfd")
+        ttk.Label(ctrls, text="OUTPUT DESTINATION:", font=(self.custom_font_name, 8, "bold")).pack(anchor="w")
+        out_f = ttk.Frame(ctrls)
         out_f.pack(fill="x", pady=2)
         self.out_dir_var = tk.StringVar(value="Export")
-        tk.Entry(out_f, textvariable=self.out_dir_var, font=("Arial", 8)).pack(side="left", fill="x", expand=True)
-        tk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
+        ttk.Entry(out_f, textvariable=self.out_dir_var, font=(self.custom_font_name, 8)).pack(side="left", fill="x", expand=True)
+        ttk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
 
-        tk.Button(ctrls, text="2. BUILD ATLAS", command=self.generate, bg="#2e7d32", fg="white", font=("Arial", 10, "bold"), height=2).pack(fill="x", pady=(15, 20))
+        self.btn_generate = ttk.Button(ctrls, text="2. BUILD ATLAS", command=self.generate, style="Success.TButton")
+        self.btn_generate.pack(fill="x", pady=(15, 20))
 
         # --- TAB 1 PREVIEW ---
-        pre_frame = tk.Frame(self.tab_trn, bg="#111")
+        pre_frame = ttk.Frame(self.tab_trn)
         pre_frame.pack(side="right", expand=True, fill="both")
-        self.canvas = tk.Canvas(pre_frame, bg="#1a1a1a", highlightthickness=0)
+        self.canvas = tk.Canvas(pre_frame, bg="#050505", highlightthickness=0)
         self.canvas.pack(side="left", expand=True, fill="both")
         # --- WORLD BUILDER TOOLS TAB
-        self.tab_world = tk.Frame(self.notebook)
+        self.tab_world = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_world, text=" World Builder Tools ")
         self.setup_world_tab()
         self.on_mode_change()
         
         # 4. Setup TAB 3 (Help)
-        self.tab_help = tk.Frame(self.notebook, bg="#fdfdfd")
+        self.tab_help = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_help, text=" Help & About ")
         self.setup_help_tab()
 
@@ -443,81 +526,84 @@ class BZ98TRNArchitect:
         return spec
 
     def setup_world_tab(self):
-        container = tk.Frame(self.tab_world, padx=20, pady=20)
+        container = ttk.Frame(self.tab_world, padding=20)
         container.pack(fill="both", expand=True)
 
         # --- LEFT PANEL: CONTROLS ---
-        left_panel = tk.Frame(container, width=400) 
+        left_panel = ttk.Frame(container, width=400) 
         left_panel.pack(side="left", fill="y", padx=(0, 20))
         left_panel.pack_propagate(False) 
 
         # --- SECTION 1: SKYBOX TOOLS ---
-        tk.Label(left_panel, text="SKYBOX TOOLS", font=("Arial", 14, "bold")).pack(anchor="w")
+        ttk.Label(left_panel, text="SKYBOX TOOLS", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w")
         
-        sky_input_frame = tk.LabelFrame(left_panel, text=" Input Panorama ", padx=10, pady=10)
+        sky_input_frame = ttk.LabelFrame(left_panel, text=" Input Panorama ", padding=10)
         sky_input_frame.pack(fill="x", pady=5)
-        tk.Entry(sky_input_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
-        tk.Button(sky_input_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
+        ttk.Entry(sky_input_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(sky_input_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
 
-        sky_cfg_frame = tk.Frame(left_panel)
+        sky_cfg_frame = ttk.Frame(left_panel)
         sky_cfg_frame.pack(fill="x", pady=5)
-        tk.Label(sky_cfg_frame, text="Prefix:").pack(side="left")
-        tk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
-        tk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
-        tk.OptionMenu(sky_cfg_frame, self.sky_out_res, 512, 1024, 2048).pack(side="left")
+        ttk.Label(sky_cfg_frame, text="Prefix:").pack(side="left")
+        ttk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
+        ttk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
+        ttk.OptionMenu(sky_cfg_frame, self.sky_out_res, self.sky_out_res.get(), 512, 1024, 2048).pack(side="left")
 
         # Skybox Export Toggles (Restored)
-        sky_exp_opts = tk.Frame(left_panel)
+        sky_exp_opts = ttk.Frame(left_panel)
         sky_exp_opts.pack(fill="x", pady=5)
-        tk.Checkbutton(sky_exp_opts, text="DDS", variable=self.export_dds).pack(side="left")
-        tk.Checkbutton(sky_exp_opts, text="Material", variable=self.export_mat).pack(side="left")
-        tk.Checkbutton(sky_exp_opts, text="TRN", variable=self.export_trn).pack(side="left")
+        ttk.Checkbutton(sky_exp_opts, text="DDS", variable=self.export_dds).pack(side="left")
+        ttk.Checkbutton(sky_exp_opts, text="Material", variable=self.export_mat).pack(side="left")
+        ttk.Checkbutton(sky_exp_opts, text="TRN", variable=self.export_trn).pack(side="left")
 
-        tk.Button(left_panel, text="🚀 EXPORT SKYBOX", command=self.export_skybox, 
-                  bg="#2e7d32", fg="white", font=("Arial", 10, "bold")).pack(fill="x", pady=(5, 15))
+        self.btn_skybox = ttk.Button(left_panel, text="🚀 EXPORT SKYBOX", command=self.export_skybox, 
+                  style="Success.TButton")
+        self.btn_skybox.pack(fill="x", pady=(5, 15))
 
         ttk.Separator(left_panel, orient="horizontal").pack(fill="x", pady=10)
 
 # --- UPDATED SECTION 2: HEIGHTMAP CONVERTER ---
-        tk.Label(left_panel, text="HEIGHTMAP CONVERTER", font=("Arial", 14, "bold")).pack(anchor="w")
-        hg2_frame = tk.LabelFrame(left_panel, text=" Terrain Settings ", padx=10, pady=10)
+        ttk.Label(left_panel, text="HEIGHTMAP CONVERTER", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        hg2_frame = ttk.LabelFrame(left_panel, text=" Terrain Settings ", padding=10)
         hg2_frame.pack(fill="x", pady=5)
 
-        tk.Entry(hg2_frame, textvariable=self.hg2_path).pack(fill="x", pady=2)
-        tk.Button(hg2_frame, text="Browse HG2/PNG", command=self.browse_hg2).pack(fill="x", pady=5)
+        ttk.Entry(hg2_frame, textvariable=self.hg2_path).pack(fill="x", pady=2)
+        ttk.Button(hg2_frame, text="Browse HG2/PNG", command=self.browse_hg2).pack(fill="x", pady=5)
 
         # Map Dimension Presets
-        tk.Label(hg2_frame, text="Map Size Preset When Converting PNG to HG2:").pack(anchor="w", pady=(5,0))
+        ttk.Label(hg2_frame, text="Map Size Preset When Converting PNG to HG2:").pack(anchor="w", pady=(5,0))
         self.preset_var = tk.StringVar(value="Medium (5120m)")
         preset_menu = ttk.Combobox(hg2_frame, textvariable=self.preset_var, values=self.map_presets, state="readonly")
         preset_menu.pack(fill="x", pady=5)
         preset_menu.bind("<<ComboboxSelected>>", self.apply_map_preset)
 
         # Manual Dimension Controls
-        dim_frame = tk.Frame(hg2_frame)
+        dim_frame = ttk.Frame(hg2_frame)
         dim_frame.pack(fill="x", pady=5)
         
-        tk.Label(dim_frame, text="Width (m):").grid(row=0, column=0, sticky="w")
-        tk.Entry(dim_frame, textvariable=self.hg2_width_meters, width=8).grid(row=0, column=1, padx=5)
+        ttk.Label(dim_frame, text="Width (m):").grid(row=0, column=0, sticky="w")
+        ttk.Entry(dim_frame, textvariable=self.hg2_width_meters, width=8).grid(row=0, column=1, padx=5)
         
-        tk.Label(dim_frame, text="Depth (m):").grid(row=1, column=0, sticky="w")
-        tk.Entry(dim_frame, textvariable=self.hg2_depth_meters, width=8).grid(row=1, column=1, padx=5)
+        ttk.Label(dim_frame, text="Depth (m):").grid(row=1, column=0, sticky="w")
+        ttk.Entry(dim_frame, textvariable=self.hg2_depth_meters, width=8).grid(row=1, column=1, padx=5)
         
-        tk.Label(hg2_frame, text="*Must be multiples of 1280", font=("Arial", 7, "italic"), fg="gray").pack(anchor="w")
+        ttk.Label(hg2_frame, text="*Must be multiples of 1280", font=(self.custom_font_name, 7, "italic"), foreground="#666666").pack(anchor="w")
 
         self.create_hg2_slider(hg2_frame, "Brightness:", self.hg2_brightness, 0.1, 2.0, 0.1)
         self.create_hg2_slider(hg2_frame, "Contrast:", self.hg2_contrast, 0.1, 2.0, 0.1)
         self.create_hg2_slider(hg2_frame, "Smoothing:", self.hg2_smooth_val, 0, 10, 1)
 
-        hg2_btn_frame = tk.Frame(hg2_frame)
+        hg2_btn_frame = ttk.Frame(hg2_frame)
         hg2_btn_frame.pack(fill="x", pady=5)
-        tk.Button(hg2_btn_frame, text="HG2 -> PNG", bg="#0288d1", fg="white",
-                  command=self.convert_hg2_to_png).pack(side="left", expand=True, fill="x", padx=(0,2))
-        tk.Button(hg2_btn_frame, text="PNG -> HG2", bg="#f57c00", fg="white",
-                  command=self.convert_png_to_hg2).pack(side="left", expand=True, fill="x", padx=(2,0))
+        self.btn_hg2_png = ttk.Button(hg2_btn_frame, text="HG2 -> PNG", style="Action.TButton",
+                  command=self.convert_hg2_to_png)
+        self.btn_hg2_png.pack(side="left", expand=True, fill="x", padx=(0,2))
+        self.btn_png_hg2 = ttk.Button(hg2_btn_frame, text="PNG -> HG2", style="Action.TButton",
+                  command=self.convert_png_to_hg2)
+        self.btn_png_hg2.pack(side="left", expand=True, fill="x", padx=(2,0))
 
         # --- RIGHT PANEL: UNIFIED PREVIEW ---
-        right_panel = tk.LabelFrame(container, text=" Preview Visualizer ", bg="#111")
+        right_panel = ttk.LabelFrame(container, text=" Preview Visualizer ")
         right_panel.pack(side="right", expand=True, fill="both")
 
         self.world_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
@@ -535,9 +621,10 @@ class BZ98TRNArchitect:
                 self.hg2_depth_meters.set(size)
     def create_hg2_slider(self, parent, label, var, from_, to, res):
         """Helper to create sliders that trigger the preview update"""
-        tk.Label(parent, text=label, font=("Arial", 9)).pack(anchor="w")
+        ttk.Label(parent, text=label, font=(self.custom_font_name, 9)).pack(anchor="w")
         s = tk.Scale(parent, from_=from_, to=to, resolution=res, orient="horizontal", 
-                     variable=var, command=self.update_hg2_preview)
+                     variable=var, command=self.update_hg2_preview,
+                     bg=BZ_BG, fg=BZ_FG, troughcolor="#1a1a1a", activebackground=BZ_GREEN, highlightthickness=0)
         s.pack(fill="x", pady=(0, 8))
 
     def update_hg2_preview(self, *args):
@@ -591,7 +678,7 @@ class BZ98TRNArchitect:
             ch = self.world_preview_canvas.winfo_height()
             if cw < 10: cw, ch = 600, 600
             
-            preview_8bit.thumbnail((cw, ch), Image.Resampling.LANCZOS)
+            preview_8bit.thumbnail((cw, ch), self.resample_method)
             self.hg2_tk_photo = ImageTk.PhotoImage(preview_8bit)
             self.world_preview_canvas.delete("all")
             self.world_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
@@ -600,11 +687,22 @@ class BZ98TRNArchitect:
             print(f"Preview Update Error: {e}")
 
     def bind_events(self):
-        self.canvas.bind("<ButtonPress-1>", lambda e: self.canvas.scan_mark(e.x, e.y))
-        self.canvas.bind("<B1-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
+        self.canvas.bind("<ButtonPress-1>", self.on_drag_start)
+        self.canvas.bind("<B1-Motion>", self.on_drag_motion)
+        self.canvas.bind("<ButtonRelease-1>", self.on_drag_end)
         self.canvas.bind("<MouseWheel>", self.zoom_wheel)
         self.canvas.bind("<Button-4>", self.zoom_wheel)
         self.canvas.bind("<Button-5>", self.zoom_wheel)
+
+    def on_drag_start(self, event):
+        self.canvas.config(cursor="fleur")
+        self.canvas.scan_mark(event.x, event.y)
+
+    def on_drag_motion(self, event):
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def on_drag_end(self, event):
+        self.canvas.config(cursor="")
         
     def browse_skybox_image(self):
         ftypes = [
@@ -652,7 +750,6 @@ class BZ98TRNArchitect:
             messagebox.showerror("Preview Error", f"Could not generate preview: {str(e)}")
 
     def export_skybox(self):
-        """High-quality export with sorted TRN entries and uppercase material names."""
         path = self.sky_input_path.get()
         if not path or not hasattr(self, 'generated_faces'):
             messagebox.showwarning("Warning", "Please load an image first.")
@@ -661,13 +758,26 @@ class BZ98TRNArchitect:
         out_dir = filedialog.askdirectory(title="Select Export Folder")
         if not out_dir: return
 
+        cfg = {
+            "path": path,
+            "out_dir": out_dir,
+            "res": self.sky_out_res.get(),
+            "prefix": self.sky_prefix_var.get().lower().strip(),
+            "exp_mat": self.export_mat.get(),
+            "exp_trn": self.export_trn.get()
+        }
+        self.btn_skybox.config(text="GENERATING CUBEMAP...", state="disabled")
+        threading.Thread(target=self._export_skybox_worker, args=(cfg,), daemon=True).start()
+
+    def _export_skybox_worker(self, cfg):
+        """High-quality export with sorted TRN entries and uppercase material names."""
         try:
             # Load original for high-res processing
-            img_data = np.array(Image.open(path).convert("RGB")).astype(np.float32)
-            res = self.sky_out_res.get()
+            img_data = np.array(Image.open(cfg["path"]).convert("RGB")).astype(np.float32)
+            res = cfg["res"]
             
             # Use the user-defined prefix (enforce lowercase for filenames)
-            base_name = self.sky_prefix_var.get().lower().strip()
+            base_name = cfg["prefix"]
             
             # Mapping faces to their specific BZ98 TRN parameters
             # Format: suffix: (Azimuth, Elevation, Roll, StarIndex)
@@ -691,12 +801,12 @@ class BZ98TRNArchitect:
                 img = Image.fromarray(face_arr)
                 
                 # Save PNG
-                img.save(os.path.join(out_dir, f"{base_name}{suffix}.png"))
+                img.save(os.path.join(cfg["out_dir"], f"{base_name}{suffix}.png"))
 
                 # 2. Export .material file
-                if self.export_mat.get():
+                if cfg["exp_mat"]:
                     mat_filename = f"{base_name}{suffix}.material"
-                    with open(os.path.join(out_dir, mat_filename), "w") as f:
+                    with open(os.path.join(cfg["out_dir"], mat_filename), "w") as f:
                         # Material name example: PMARSNZ.MAP (Uppercase)
                         mat_name_upper = f"{base_name.upper()}{suffix.upper()}.MAP"
                         f.write(f"material {mat_name_upper}\n")
@@ -710,8 +820,8 @@ class BZ98TRNArchitect:
                         f.write("            }\n        }\n    }\n}\n")
 
             # 3. Export TRN Entry (Sorted 01 -> 06)
-            if self.export_trn.get():
-                with open(os.path.join(out_dir, "TRN_Entries.txt"), "w") as f:
+            if cfg["exp_trn"]:
+                with open(os.path.join(cfg["out_dir"], "TRN_Entries.txt"), "w") as f:
                     f.write("[Sky]\n\nBackdropTexture =\n\nBackdropDistance= 400\n\n")
                     f.write("BackdropWidth   = 800\n\nBackdropHeight  = 100\n\n[Stars]\n\nRadius      = 4096\n\n")
                     
@@ -727,9 +837,11 @@ class BZ98TRNArchitect:
                         f.write(f"Elevation{idx} = {elev}\n")
                         f.write(f"Roll{idx}      = {roll}\n\n")
 
-            messagebox.showinfo("Success", "Export Complete: TRN entries sorted 01-06.")
+            self.root.after(0, lambda: messagebox.showinfo("Success", "Export Complete: TRN entries sorted 01-06."))
         except Exception as e:
-            messagebox.showerror("Export Error", str(e))
+            self.root.after(0, lambda: messagebox.showerror("Export Error", str(e)))
+        finally:
+            self.root.after(0, lambda: self.btn_skybox.config(text="🚀 EXPORT SKYBOX", state="normal"))
 
     def generate_cube_face(self, img, face_idx, res, order=3):
         grid = np.linspace(-1 + (1/res), 1 - (1/res), res)
@@ -786,7 +898,7 @@ class BZ98TRNArchitect:
         ch = self.world_preview_canvas.winfo_height()
         if cw < 10: cw, ch = 800, 600
         
-        canvas_img.thumbnail((cw, ch), Image.Resampling.LANCZOS)
+        canvas_img.thumbnail((cw, ch), self.resample_method)
         self.world_tk_photo = ImageTk.PhotoImage(canvas_img)
         
         self.world_preview_canvas.delete("all")
@@ -820,10 +932,23 @@ class BZ98TRNArchitect:
         self.zoom_level = max(0.1, min(10.0, self.zoom_level))
         self.refresh_canvas()
 
-    def generate_mask(self, mode="diag"):
-        res = self.tile_res_var.get()
-        style = self.style_var.get()
-        random.seed(self.seed_var.get()) 
+    def generate_mask(self, mode="diag", cfg=None):
+        if cfg:
+            res = cfg["res"]
+            style = cfg["style"]
+            random.seed(cfg["seed"])
+            depth_v = cfg["depth"]
+            teeth_v = cfg["teeth"]
+            jitter_v = cfg["jitter"]
+            soft_v = cfg["softness"]
+        else:
+            res = self.tile_res_var.get()
+            style = self.style_var.get()
+            random.seed(self.seed_var.get()) 
+            depth_v = self.depth_var.get()
+            teeth_v = self.teeth_count.get()
+            jitter_v = self.jitter_var.get()
+            soft_v = self.blend_softness.get()
         
         # --- ENGINE A: VERTEX-BASED (Geometric) ---
         vertex_styles = ["Square/Blocky", "Sawtooth", "Interlocking L", "Sine Wave", "Stairs/Steps"]
@@ -831,9 +956,9 @@ class BZ98TRNArchitect:
         if style in vertex_styles:
             mask = Image.new("L", (res, res), 0)
             draw = ImageDraw.Draw(mask)
-            depth_px = res * self.depth_var.get()
-            count = max(1, self.teeth_count.get())
-            jitter = self.jitter_var.get()
+            depth_px = res * depth_v
+            count = max(1, teeth_v)
+            jitter = jitter_v
 
             if mode == "cap":
                 line_start, line_end = (0, res * 0.75), (res, res * 0.75)
@@ -879,8 +1004,8 @@ class BZ98TRNArchitect:
                     else:
                         gradient[y, x] = ((x + y) / (res * 2))
             
-            influence = self.jitter_var.get() / 100.0
-            freq = max(1, self.teeth_count.get())
+            influence = jitter_v / 100.0
+            freq = max(1, teeth_v)
             
             # Generate primary noise
             noise_img = Image.effect_noise((res, res), freq)
@@ -916,7 +1041,7 @@ class BZ98TRNArchitect:
                 # Default sharp threshold for Voronoi and Radial
                 mask = mask.point(lambda p: 255 if p > 128 else 0)
 
-        blur = self.blend_softness.get()
+        blur = soft_v
         if blur > 0:
             mask = mask.filter(ImageFilter.GaussianBlur(blur))
             
@@ -934,7 +1059,7 @@ class BZ98TRNArchitect:
                 base_id = int(match.group(1)); var = match.group(2).upper() if match.group(2) else "A"
                 if base_id not in self.groups: self.groups[base_id] = {}
                 try: 
-                    img = Image.open(os.path.join(self.source_dir, f)).convert("RGBA").resize((res, res), Image.LANCZOS)
+                    img = Image.open(os.path.join(self.source_dir, f)).convert("RGBA").resize((res, res), self.resample_method)
                     self.groups[base_id][var] = img
                 except: continue
         self.update_preview()
@@ -972,9 +1097,9 @@ class BZ98TRNArchitect:
         
         # UI update for atlas size
         if total_size > 8192:
-            self.info_label.config(text=f"CRITICAL: {total_size}px (Exceeds 8k!)", fg="#ff5252")
+            self.info_label.config(text=f"CRITICAL: {total_size}px (Exceeds 8k!)", foreground="#ff5252")
         else:
-            self.info_label.config(text=f"Atlas Size: {total_size}x{total_size}", fg="#4caf50")
+            self.info_label.config(text=f"Atlas Size: {total_size}x{total_size}", foreground="#4caf50")
 
         self.full_atlas_preview = Image.new("RGBA", (total_size, total_size), (30, 30, 30, 255))
         for idx, img in enumerate(baked):
@@ -987,7 +1112,7 @@ class BZ98TRNArchitect:
         if not self.full_atlas_preview: return
         w, h = self.full_atlas_preview.size
         new_size = (int(w * self.zoom_level), int(h * self.zoom_level))
-        mode = Image.NEAREST if self.zoom_level > 1 else Image.LANCZOS
+        mode = Image.NEAREST
         self.preview_tk = ImageTk.PhotoImage(self.full_atlas_preview.resize(new_size, mode))
         self.canvas.delete("all")
         self.canvas.create_image(0, 0, anchor="nw", image=self.preview_tk)
@@ -995,150 +1120,186 @@ class BZ98TRNArchitect:
 
     def generate(self):
         if not self.groups: return
-        
-        # Setup naming and resolution vars
-        res = self.tile_res_var.get()
-        prfx = self.planet_var.get().lower()
-        prfx_upper = prfx.upper()
-        mode = self.trans_mode_var.get()
-        
-        baked_data = []
-        trn_blocks = {}
-        indices = sorted(self.groups.keys())
-        
-        # Initialize TRN structure
-        for i in indices:
-            trn_blocks[i] = {"solids": [], "transitions": []}
+        cfg = {
+            "res": self.tile_res_var.get(),
+            "prfx": self.planet_var.get().lower(),
+            "mode": self.trans_mode_var.get(),
+            "out_dir": self.out_dir_var.get(),
+            "exp_dds": self.exp_dds.get(),
+            "exp_png": self.exp_png.get(),
+            "exp_normal": self.exp_normal.get(),
+            "exp_specular": self.exp_specular.get(),
+            "exp_emissive": self.exp_emissive.get(),
+            "exp_csv": self.exp_csv.get(),
+            "exp_trn": self.exp_trn.get(),
+            "exp_mat": self.exp_mat.get(),
+            "style": self.style_var.get(),
+            "seed": self.seed_var.get(),
+            "depth": self.depth_var.get(),
+            "teeth": self.teeth_count.get(),
+            "jitter": self.jitter_var.get(),
+            "softness": self.blend_softness.get(),
+            "groups": self.groups 
+        }
+        self.btn_generate.config(text="BUILDING ATLAS...", state="disabled")
+        threading.Thread(target=self._generate_worker, args=(cfg,), daemon=True).start()
 
-        # 1. Process Solids
-        for i in indices:
-            vars_found = sorted(self.groups[i].keys())
-            repeat_idx = f"{i}{i}"
-            for idx, var in enumerate(vars_found):
-                # Using upper case for MAP names to ensure engine compatibility
-                name = f"{prfx}{repeat_idx}s{var}0.MAP".upper()
-                baked_data.append((name, self.groups[i][var]))
-                slot = chr(65 + idx) 
-                trn_blocks[i]["solids"].append((slot, name))
-
-        # 2. Process Transitions
-        c_m, d_m = self.generate_mask("cap"), self.generate_mask("diag")
-        for idx, i in enumerate(indices):
-            # Determine logic based on Linear or Matrix mode
-            targets = [indices[idx + 1]] if mode == "Linear" and idx + 1 < len(indices) else indices[idx + 1:] if mode == "Matrix" else []
-
-            for j in targets:
-                base_img, target_img = self.groups[i]["A"], self.groups[j]["A"]
-                
-                # Composite the Cap
-                c_img = base_img.copy()
-                c_img.paste(target_img, (0,0), c_m)
-                
-                # Composite the Diagonal
-                d_img = base_img.copy()
-                d_img.paste(target_img, (0,0), d_m)
-                
-                c_name = f"{prfx}{i}{j}cA0.MAP".upper()
-                d_name = f"{prfx}{i}{j}dA0.MAP".upper()
-                
-                baked_data.append((c_name, c_img))
-                baked_data.append((d_name, d_img))
-                trn_blocks[i]["transitions"].append((j, c_name, d_name))
-
-        # 3. Atlas Construction (FIXED: Zero-index alignment)
-        # Calculate grid size (gs)
-        gs = math.ceil(math.sqrt(len(baked_data)))
-        at_res = gs * res 
-        at_img = Image.new("RGBA", (at_res, at_res), (128, 128, 128, 255))
-        
-        # Calculate clean UV step (e.g., 0.25 for 4x4)
-        uv_step = 1.0 / gs
-        
-        # Stock Format: The 'null' entry at the start of the CSV
-        csv_lines = [f",0,0,{uv_step:.6g},{uv_step:.6g}"]
-        
-        for idx, (name, img) in enumerate(baked_data):
-            # Calculate grid position (Start at 0,0)
-            x_idx = idx % gs
-            y_idx = idx // gs
+    def _generate_worker(self, cfg):
+        try:
+            res = cfg["res"]
+            prfx = cfg["prfx"]
+            prfx_upper = prfx.upper()
+            mode = cfg["mode"]
             
-            x_pixel, y_pixel = x_idx * res, y_idx * res
-            at_img.paste(img, (x_pixel, y_pixel))
+            baked_data = []
+            trn_blocks = {}
+            indices = sorted(cfg["groups"].keys())
             
-            # Use .6g for clean fractional formatting like stock EU
-            u = x_idx * uv_step
-            v = y_idx * uv_step
-            csv_lines.append(f"{name},{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
-        
-# --- 4. Final Export & Map Generation ---
-        out_dir = self.out_dir_var.get()
-        if not os.path.exists(out_dir): os.makedirs(out_dir)
+            # Initialize TRN structure
+            for i in indices:
+                trn_blocks[i] = {"solids": [], "transitions": []}
 
-        def save_map_asset(img, suffix):
-            base_filename = f"{prfx}_atlas_{suffix}"
-            ext = ".dds" if self.exp_dds.get() else ".png"
+            # 1. Process Solids
+            for i in indices:
+                vars_found = sorted(cfg["groups"][i].keys())
+                repeat_idx = f"{i}{i}"
+                for idx, var in enumerate(vars_found):
+                    # Using upper case for MAP names to ensure engine compatibility
+                    name = f"{prfx}{repeat_idx}s{var}0.MAP".upper()
+                    baked_data.append((name, cfg["groups"][i][var]))
+                    slot = chr(65 + idx) 
+                    trn_blocks[i]["solids"].append((slot, name))
+
+            # 2. Process Transitions
+            c_m, d_m = self.generate_mask("cap", cfg), self.generate_mask("diag", cfg)
+            for idx, i in enumerate(indices):
+                # Determine logic based on Linear or Matrix mode
+                targets = [indices[idx + 1]] if mode == "Linear" and idx + 1 < len(indices) else indices[idx + 1:] if mode == "Matrix" else []
+
+                for j in targets:
+                    base_img, target_img = cfg["groups"][i]["A"], cfg["groups"][j]["A"]
+                    
+                    # Composite the Cap
+                    c_img = base_img.copy()
+                    c_img.paste(target_img, (0,0), c_m)
+                    
+                    # Composite the Diagonal
+                    d_img = base_img.copy()
+                    d_img.paste(target_img, (0,0), d_m)
+                    
+                    c_name = f"{prfx}{i}{j}cA0.MAP".upper()
+                    d_name = f"{prfx}{i}{j}dA0.MAP".upper()
+                    
+                    baked_data.append((c_name, c_img))
+                    baked_data.append((d_name, d_img))
+                    trn_blocks[i]["transitions"].append((j, c_name, d_name))
+
+            # 3. Atlas Construction (FIXED: Zero-index alignment)
+            # Calculate grid size (gs)
+            gs = math.ceil(math.sqrt(len(baked_data)))
+            at_res = gs * res 
+            at_img = Image.new("RGBA", (at_res, at_res), (128, 128, 128, 255))
             
-            if self.exp_png.get():
-                img.save(os.path.join(out_dir, base_filename + ".png"))
+            # Calculate clean UV step (e.g., 0.25 for 4x4)
+            uv_step = 1.0 / gs
             
-            if self.exp_dds.get():
-                img.save(os.path.join(out_dir, base_filename + ".dds"))
+            # Stock Format: The 'null' entry at the start of the CSV
+            csv_lines = [f",0,0,{uv_step:.6g},{uv_step:.6g}"]
+            
+            for idx, (name, img) in enumerate(baked_data):
+                # Calculate grid position (Start at 0,0)
+                x_idx = idx % gs
+                y_idx = idx // gs
                 
-            return base_filename + ext
-
-        # Map Dictionary for Material Aliases
-        maps_to_write = {"DiffuseMap": save_map_asset(at_img, "d")}
-
-        # Normal Map
-        if self.exp_normal.get():
-            maps_to_write["NormalMap"] = save_map_asset(self.generate_normal_map(at_img), "n")
-
-        # Specular Map
-        if self.exp_specular.get():
-            maps_to_write["SpecularMap"] = save_map_asset(self.generate_specular_map(at_img), "s")
-
-        # Full Color Emissive Map
-        if self.exp_emissive.get():
-            # Create a mask from brightness (>220)
-            mask = at_img.convert("L").point(lambda p: 255 if p > 220 else 0)
-            # Create a black background the same size
-            black_bg = Image.new("RGB", at_img.size, (0, 0, 0))
-            # Paste original colors through the mask
-            em_color = Image.composite(at_img, black_bg, mask)
-            maps_to_write["EmissiveMap"] = save_map_asset(em_color, "e")
-        else:
-            maps_to_write["EmissiveMap"] = "black.dds"
-
-        # --- Material File Generation ---
-        if self.exp_mat.get():
-            mat_filename = f"{prfx}_detail_atlas"
-            with open(os.path.join(out_dir, f"{mat_filename}.material"), "w") as f:
-                f.write('import * from "BZTerrainBase.material"\n\n')
-                f.write(f'material {mat_filename.upper()} : BZTerrainBase\n{{\n')
-                for alias, filename in maps_to_write.items():
-                    f.write(f'\tset_texture_alias {alias} {filename}\n')
-                f.write(f'\tset_texture_alias DetailMap {prfx}_detail.dds\n')
-                f.write('\n\tset $diffuse "1 1 1"\n\tset $ambient "1 1 1"\n')
-                f.write('\tset $specular ".25 .25 .25"\n\tset $shininess "63"\n}\n')
-
-        # --- TRN Config (FIXED: Added [Atlases] block) ---
-        if self.exp_trn.get():
-            trn_path = f"{prfx_upper}_CONFIG.TRN"
-            with open(trn_path, "w") as f:
-                f.write("[Atlases]\n")
-                f.write(f"MaterialName = {mat_name}\n\n")
+                x_pixel, y_pixel = x_idx * res, y_idx * res
+                at_img.paste(img, (x_pixel, y_pixel))
                 
-                for idx in sorted(trn_blocks.keys()):
-                    f.write(f"[TextureType{idx}]\nFlatColor= 128\n")
-                    # Write Solids
-                    for slot, name in trn_blocks[idx]["solids"]:
-                        f.write(f"Solid{slot}0 = {name}\n")
-                    # Write Transitions
-                    for target, c_n, d_n in trn_blocks[idx]["transitions"]:
-                        f.write(f"CapTo{target}_A0 = {c_n}\n")
-                        f.write(f"DiagonalTo{target}_A0 = {d_n}\n")
-                        
-        messagebox.showinfo("Export Done", f"World bundle generated for {prfx_upper}!\nGrid size: {gs}x{gs}")
+                # Use .6g for clean fractional formatting like stock EU
+                u = x_idx * uv_step
+                v = y_idx * uv_step
+                csv_lines.append(f"{name},{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
+            
+    # --- 4. Final Export & Map Generation ---
+            out_dir = cfg["out_dir"]
+            if not os.path.exists(out_dir): os.makedirs(out_dir)
+
+            # Export CSV
+            if cfg["exp_csv"]:
+                csv_path = os.path.join(out_dir, f"{prfx}_mapping.csv")
+                with open(csv_path, "w") as f:
+                    f.write("\n".join(csv_lines))
+
+            def save_map_asset(img, suffix):
+                base_filename = f"{prfx}_atlas_{suffix}"
+                ext = ".dds" if cfg["exp_dds"] else ".png"
+                
+                if cfg["exp_png"]:
+                    img.save(os.path.join(out_dir, base_filename + ".png"))
+                
+                if cfg["exp_dds"]:
+                    img.save(os.path.join(out_dir, base_filename + ".dds"))
+                    
+                return base_filename + ext
+
+            # Map Dictionary for Material Aliases
+            maps_to_write = {"DiffuseMap": save_map_asset(at_img, "d")}
+
+            # Normal Map
+            if cfg["exp_normal"]:
+                maps_to_write["NormalMap"] = save_map_asset(self.generate_normal_map(at_img), "n")
+
+            # Specular Map
+            if cfg["exp_specular"]:
+                maps_to_write["SpecularMap"] = save_map_asset(self.generate_specular_map(at_img), "s")
+
+            # Full Color Emissive Map
+            if cfg["exp_emissive"]:
+                # Create a mask from brightness (>220)
+                mask = at_img.convert("L").point(lambda p: 255 if p > 220 else 0)
+                # Create a black background the same size
+                black_bg = Image.new("RGB", at_img.size, (0, 0, 0))
+                # Paste original colors through the mask
+                em_color = Image.composite(at_img, black_bg, mask)
+                maps_to_write["EmissiveMap"] = save_map_asset(em_color, "e")
+            else:
+                maps_to_write["EmissiveMap"] = "black.dds"
+
+            mat_name = f"{prfx}_detail_atlas".upper()
+
+            # --- Material File Generation ---
+            if cfg["exp_mat"]:
+                mat_filename = f"{prfx}_detail_atlas"
+                with open(os.path.join(out_dir, f"{mat_filename}.material"), "w") as f:
+                    f.write('import * from "BZTerrainBase.material"\n\n')
+                    f.write(f'material {mat_filename.upper()} : BZTerrainBase\n{{\n')
+                    for alias, filename in maps_to_write.items():
+                        f.write(f'\tset_texture_alias {alias} {filename}\n')
+                    f.write(f'\tset_texture_alias DetailMap {prfx}_detail.dds\n')
+                    f.write('\n\tset $diffuse "1 1 1"\n\tset $ambient "1 1 1"\n')
+                    f.write('\tset $specular ".25 .25 .25"\n\tset $shininess "63"\n}\n')
+
+            # --- TRN Config (FIXED: Added [Atlases] block) ---
+            if cfg["exp_trn"]:
+                trn_path = os.path.join(out_dir, f"{prfx_upper}_CONFIG.TRN")
+                with open(trn_path, "w") as f:
+                    f.write("[Atlases]\n")
+                    f.write(f"MaterialName = {mat_name}\n\n")
+                    
+                    for idx in sorted(trn_blocks.keys()):
+                        f.write(f"[TextureType{idx}]\nFlatColor= 128\n")
+                        # Write Solids
+                        for slot, name in trn_blocks[idx]["solids"]:
+                            f.write(f"Solid{slot}0 = {name}\n")
+                        # Write Transitions
+                        for target, c_n, d_n in trn_blocks[idx]["transitions"]:
+                            f.write(f"CapTo{target}_A0 = {c_n}\n")
+                            f.write(f"DiagonalTo{target}_A0 = {d_n}\n")
+                            
+            self.root.after(0, lambda: messagebox.showinfo("Export Done", f"World bundle generated for {prfx_upper}!\nGrid size: {gs}x{gs}"))
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+        finally:
+            self.root.after(0, lambda: self.btn_generate.config(text="2. BUILD ATLAS", state="normal"))
 
 if __name__ == "__main__":
     root = tk.Tk(); app = BZ98TRNArchitect(root); root.mainloop()
