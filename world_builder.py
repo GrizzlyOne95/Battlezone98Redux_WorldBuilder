@@ -161,7 +161,7 @@ class BZ98TRNArchitect:
         else:
             self.custom_font_name = "Consolas"
 
-        icon_path = os.path.join(self.resource_dir, "modman.ico")
+        icon_path = os.path.join(self.resource_dir, "wb.ico")
         if os.path.exists(icon_path):
             try: self.root.iconbitmap(icon_path)
             except: pass
@@ -491,14 +491,29 @@ class BZ98TRNArchitect:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(expand=True, fill="both")
 
-        # 2. Setup TAB 1 (Atlas Generator)
-        self.tab_trn = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_trn, text=" Atlas Creator ")
-
-        # 3. Setup TAB 2 (Stock Map Creator) - NEW
+        # TAB 1: Stock Map Creator
         self.tab_stock = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_stock, text=" Stock Map Creator ")
         self.setup_stock_tab()
+
+        # TAB 2: Custom Atlas Creator
+        self.tab_trn = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_trn, text=" Custom Atlas Creator ")
+
+        # TAB 3: HG2 Management
+        self.tab_hg2 = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_hg2, text=" HG2 Management ")
+        self.setup_hg2_tab()
+
+        # TAB 4: Cubemap Creator
+        self.tab_sky = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_sky, text=" Cubemap Creator ")
+        self.setup_sky_tab()
+
+        # TAB 5: Help & About
+        self.tab_help = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_help, text=" Help & About ")
+        self.setup_help_tab()
 
         # --- TAB 1 CONTROLS ---
         left_container = ttk.Frame(self.tab_trn, width=360)
@@ -527,6 +542,19 @@ class BZ98TRNArchitect:
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         # --- WIDGETS ---
+        # 1. SOURCE SELECT (Moved to Top)
+        ttk.Button(ctrls, text="1. SELECT SOURCE FOLDER", command=self.browse).pack(fill="x", pady=(0,5))
+        
+        # 2. OUTPUT SELECT (Moved to Top)
+        ttk.Label(ctrls, text="OUTPUT DESTINATION:", font=(self.custom_font_name, 8, "bold")).pack(anchor="w")
+        out_f = ttk.Frame(ctrls)
+        out_f.pack(fill="x", pady=2)
+        self.out_dir_var = tk.StringVar(value=self.config.get("out_dir", "Export"))
+        ttk.Entry(out_f, textvariable=self.out_dir_var, font=(self.custom_font_name, 8)).pack(side="left", fill="x", expand=True)
+        ttk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
+
+        ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=10)
+
         ttk.Label(ctrls, text="PLANET CONFIG", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
         ttk.Entry(ctrls, textvariable=self.planet_var, width=10).pack(anchor="w", pady=2)
         
@@ -577,17 +605,6 @@ class BZ98TRNArchitect:
 
         ttk.Separator(ctrls, orient="horizontal").pack(fill="x", pady=15)
 
-        # 1. SOURCE SELECT
-        ttk.Button(ctrls, text="1. SELECT SOURCE FOLDER", command=self.browse).pack(fill="x", pady=(0,5))
-        
-        # 2. OUTPUT SELECT (NEW)
-        ttk.Label(ctrls, text="OUTPUT DESTINATION:", font=(self.custom_font_name, 8, "bold")).pack(anchor="w")
-        out_f = ttk.Frame(ctrls)
-        out_f.pack(fill="x", pady=2)
-        self.out_dir_var = tk.StringVar(value=self.config.get("out_dir", "Export"))
-        ttk.Entry(out_f, textvariable=self.out_dir_var, font=(self.custom_font_name, 8)).pack(side="left", fill="x", expand=True)
-        ttk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
-
         self.btn_generate = ttk.Button(ctrls, text="2. BUILD ATLAS", command=self.generate, style="Success.TButton")
         self.btn_generate.pack(fill="x", pady=(15, 20))
 
@@ -596,16 +613,7 @@ class BZ98TRNArchitect:
         pre_frame.pack(side="right", expand=True, fill="both")
         self.canvas = tk.Canvas(pre_frame, bg="#050505", highlightthickness=0)
         self.canvas.pack(side="left", expand=True, fill="both")
-        # --- WORLD BUILDER TOOLS TAB
-        self.tab_world = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_world, text=" World Builder Tools ")
-        self.setup_world_tab()
         self.on_mode_change()
-        
-        # 4. Setup TAB 3 (Help)
-        self.tab_help = ttk.Frame(self.notebook)
-        self.notebook.add(self.tab_help, text=" Help & About ")
-        self.setup_help_tab()
         
         # --- LOG CONSOLE ---
         self.log_frame = ttk.Frame(self.root, padding=5)
@@ -617,6 +625,18 @@ class BZ98TRNArchitect:
         self.log_box.tag_config("error", foreground="#ff5555")
         self.log_box.tag_config("warning", foreground="#ffff55")
         self.log_box.tag_config("timestamp", foreground="#666666")
+        
+        self.print_welcome_log()
+
+    def print_welcome_log(self):
+        self.log("--------------------------------------------------", "timestamp")
+        self.log("   BZ98 REDUX WORLD BUILDER SUITE - INITIALIZED   ", "success")
+        self.log("--------------------------------------------------", "timestamp")
+        self.log("• Stock Map Creator: Generate standard multiplayer maps", "info")
+        self.log("• Atlas Creator: Build custom terrain texture atlases", "info")
+        self.log("• HG2 Management: Convert and edit heightmaps", "info")
+        self.log("• Cubemap Creator: Generate skyboxes from panoramas", "info")
+        self.log("Select a tab to begin operations.", "timestamp")
 
     def setup_stock_tab(self):
         container = ttk.Frame(self.tab_stock, padding=20)
@@ -908,46 +928,15 @@ class BZ98TRNArchitect:
         spec = enhancer.enhance(1.5) 
         return spec
 
-    def setup_world_tab(self):
-        container = ttk.Frame(self.tab_world, padding=20)
+    def setup_hg2_tab(self):
+        container = ttk.Frame(self.tab_hg2, padding=20)
         container.pack(fill="both", expand=True)
 
-        # --- LEFT PANEL: CONTROLS ---
+        # --- LEFT PANEL: HG2 CONTROLS ---
         left_panel = ttk.Frame(container, width=400) 
         left_panel.pack(side="left", fill="y", padx=(0, 20))
         left_panel.pack_propagate(False) 
 
-        # --- SECTION 1: SKYBOX TOOLS ---
-        ttk.Label(left_panel, text="SKYBOX TOOLS", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w")
-        
-        sky_input_frame = ttk.LabelFrame(left_panel, text=" Input Panorama ", padding=10)
-        sky_input_frame.pack(fill="x", pady=5)
-        ttk.Entry(sky_input_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
-        ttk.Button(sky_input_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
-
-        sky_cfg_frame = ttk.Frame(left_panel)
-        sky_cfg_frame.pack(fill="x", pady=5)
-        ttk.Label(sky_cfg_frame, text="Prefix:").pack(side="left")
-        ttk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
-        ttk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
-        ttk.OptionMenu(sky_cfg_frame, self.sky_out_res, self.sky_out_res.get(), 512, 1024, 2048).pack(side="left")
-        
-        self.create_fine_tune_slider(left_panel, "Rotation Offset (Deg):", self.sky_rotation, 0, 360, 5, "Rotate the skybox horizontally.", command=self.process_skybox)
-
-        # Skybox Export Toggles (Restored)
-        sky_exp_opts = ttk.Frame(left_panel)
-        sky_exp_opts.pack(fill="x", pady=5)
-        ttk.Checkbutton(sky_exp_opts, text="DDS", variable=self.export_dds).pack(side="left")
-        ttk.Checkbutton(sky_exp_opts, text="Material", variable=self.export_mat).pack(side="left")
-        ttk.Checkbutton(sky_exp_opts, text="TRN", variable=self.export_trn).pack(side="left")
-
-        self.btn_skybox = ttk.Button(left_panel, text="🚀 EXPORT SKYBOX", command=self.export_skybox, 
-                  style="Success.TButton")
-        self.btn_skybox.pack(fill="x", pady=(5, 15))
-
-        ttk.Separator(left_panel, orient="horizontal").pack(fill="x", pady=10)
-
-# --- UPDATED SECTION 2: HEIGHTMAP CONVERTER ---
         ttk.Label(left_panel, text="HEIGHTMAP CONVERTER", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w")
         hg2_frame = ttk.LabelFrame(left_panel, text=" Terrain Settings ", padding=10)
         hg2_frame.pack(fill="x", pady=5)
@@ -987,12 +976,56 @@ class BZ98TRNArchitect:
                   command=self.convert_png_to_hg2)
         self.btn_png_hg2.pack(side="left", expand=True, fill="x", padx=(2,0))
 
-        # --- RIGHT PANEL: UNIFIED PREVIEW ---
-        right_panel = ttk.LabelFrame(container, text=" Preview Visualizer ")
+        # --- RIGHT PANEL: HG2 PREVIEW ---
+        right_panel = ttk.LabelFrame(container, text=" Heightmap Preview ")
         right_panel.pack(side="right", expand=True, fill="both")
 
-        self.world_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
-        self.world_preview_canvas.pack(expand=True, fill="both", padx=10, pady=10)
+        self.hg2_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
+        self.hg2_preview_canvas.pack(expand=True, fill="both", padx=10, pady=10)
+
+    def setup_sky_tab(self):
+        container = ttk.Frame(self.tab_sky, padding=20)
+        container.pack(fill="both", expand=True)
+
+        # --- LEFT PANEL: SKYBOX CONTROLS ---
+        left_panel = ttk.Frame(container, width=400) 
+        left_panel.pack(side="left", fill="y", padx=(0, 20))
+        left_panel.pack_propagate(False) 
+
+        ttk.Label(left_panel, text="SKYBOX TOOLS", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        
+        sky_input_frame = ttk.LabelFrame(left_panel, text=" Input Panorama ", padding=10)
+        sky_input_frame.pack(fill="x", pady=5)
+        ttk.Entry(sky_input_frame, textvariable=self.sky_input_path).pack(side="left", fill="x", expand=True, padx=5)
+        ttk.Button(sky_input_frame, text="Browse", command=self.browse_skybox_image).pack(side="left")
+
+        sky_cfg_frame = ttk.Frame(left_panel)
+        sky_cfg_frame.pack(fill="x", pady=5)
+        ttk.Label(sky_cfg_frame, text="Prefix:").pack(side="left")
+        ttk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
+        ttk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
+        ttk.OptionMenu(sky_cfg_frame, self.sky_out_res, self.sky_out_res.get(), 512, 1024, 2048).pack(side="left")
+        
+        self.create_fine_tune_slider(left_panel, "Rotation Offset (Deg):", self.sky_rotation, 0, 360, 5, "Rotate the skybox horizontally.", command=self.process_skybox)
+
+        # Skybox Export Toggles (Restored)
+        sky_exp_opts = ttk.Frame(left_panel)
+        sky_exp_opts.pack(fill="x", pady=5)
+        ttk.Checkbutton(sky_exp_opts, text="DDS", variable=self.export_dds).pack(side="left")
+        ttk.Checkbutton(sky_exp_opts, text="Material", variable=self.export_mat).pack(side="left")
+        ttk.Checkbutton(sky_exp_opts, text="TRN", variable=self.export_trn).pack(side="left")
+
+        self.btn_skybox = ttk.Button(left_panel, text="🚀 EXPORT SKYBOX", command=self.export_skybox, 
+                  style="Success.TButton")
+        self.btn_skybox.pack(fill="x", pady=(5, 15))
+
+        # --- RIGHT PANEL: SKYBOX PREVIEW ---
+        right_panel = ttk.LabelFrame(container, text=" Cubemap Preview ")
+        right_panel.pack(side="right", expand=True, fill="both")
+
+        self.sky_preview_canvas = tk.Canvas(right_panel, bg="#050505", highlightthickness=0)
+        self.sky_preview_canvas.pack(expand=True, fill="both", padx=10, pady=10)
+
     def apply_map_preset(self, event=None):
             selection = self.preset_var.get()
             if "Custom" in selection: return
@@ -1059,14 +1092,14 @@ class BZ98TRNArchitect:
                 
             preview_8bit = Image.fromarray((norm_arr * 255).astype(np.uint8))
             
-            cw = self.world_preview_canvas.winfo_width()
-            ch = self.world_preview_canvas.winfo_height()
+            cw = self.hg2_preview_canvas.winfo_width()
+            ch = self.hg2_preview_canvas.winfo_height()
             if cw < 10: cw, ch = 600, 600
             
             preview_8bit.thumbnail((cw, ch), self.resample_method)
             self.hg2_tk_photo = ImageTk.PhotoImage(preview_8bit)
-            self.world_preview_canvas.delete("all")
-            self.world_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
+            self.hg2_preview_canvas.delete("all")
+            self.hg2_preview_canvas.create_image(cw//2, ch//2, image=self.hg2_tk_photo)
             
         except Exception as e:
             print(f"Preview Update Error: {e}")
@@ -1322,15 +1355,15 @@ class BZ98TRNArchitect:
 
         # Update the canvas
         self.root.update_idletasks()
-        cw = self.world_preview_canvas.winfo_width()
-        ch = self.world_preview_canvas.winfo_height()
+        cw = self.sky_preview_canvas.winfo_width()
+        ch = self.sky_preview_canvas.winfo_height()
         if cw < 10: cw, ch = 800, 600
         
         canvas_img.thumbnail((cw, ch), self.resample_method)
         self.world_tk_photo = ImageTk.PhotoImage(canvas_img)
         
-        self.world_preview_canvas.delete("all")
-        self.world_preview_canvas.create_image(cw//2, ch//2, anchor="center", image=self.world_tk_photo)
+        self.sky_preview_canvas.delete("all")
+        self.sky_preview_canvas.create_image(cw//2, ch//2, anchor="center", image=self.world_tk_photo)
 
     def on_res_change(self, *args):
         if self.source_dir: self.browse(initial=False) # Reload images with new res
