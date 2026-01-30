@@ -2,6 +2,7 @@ import os
 import sys
 import ctypes
 import math
+import json
 import threading
 import random
 import re
@@ -9,6 +10,7 @@ import numpy as np
 import struct
 import imageio
 import tkinter as tk
+from datetime import datetime
 from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageDraw, ImageFilter, ImageTk, ImageOps, ImageEnhance
 from scipy.ndimage import map_coordinates
@@ -20,6 +22,32 @@ BZ_GREEN = "#00ff00"
 BZ_DARK_GREEN = "#004400"
 BZ_CYAN = "#00ffff"
 
+CONFIG_FILE = "world_builder_config.json"
+
+class ToolTip:
+    def __init__(self, widget, text):
+        self.widget = widget
+        self.text = text
+        self.tip_window = None
+        widget.bind("<Enter>", self.show_tip)
+        widget.bind("<Leave>", self.hide_tip)
+
+    def show_tip(self, event=None):
+        x = self.widget.winfo_rootx() + 25
+        y = self.widget.winfo_rooty() + 20
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=self.text, justify='left',
+                       background="#1a1a1a", foreground=BZ_CYAN, 
+                       relief='solid', borderwidth=1, font=("Consolas", "9"))
+        label.pack(ipadx=1)
+
+    def hide_tip(self, event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
+
 class BZ98TRNArchitect:
     def __init__(self, root):
         self.root = root # Keep reference to main root
@@ -27,6 +55,17 @@ class BZ98TRNArchitect:
         self.root.geometry("1400x950")
         self.root.configure(bg=BZ_BG)
         
+        # Font/Icon logic - Moved up for config loading
+        if getattr(sys, 'frozen', False):
+            self.base_dir = os.path.dirname(sys.executable)
+            self.resource_dir = sys._MEIPASS
+        else:
+            self.base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.resource_dir = self.base_dir
+
+        self.config = self.load_config()
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
         # Initialize variables first to prevent AttributeErrors
         self.sky_prefix_var = tk.StringVar(value="pmars")
         self.hg2_path = tk.StringVar() 
@@ -43,26 +82,27 @@ class BZ98TRNArchitect:
         self.hg2_depth_meters = tk.IntVar(value=5120)
 
         # --- Variables ---
-        self.planet_var = tk.StringVar(value="AC")
-        self.tile_res_var = tk.IntVar(value=512)
+        self.planet_var = tk.StringVar(value=self.config.get("planet_prefix", "AC"))
+        self.tile_res_var = tk.IntVar(value=self.config.get("tile_res", 512))
         # self.synthetic_mode = tk.BooleanVar(value=True)
-        self.style_var = tk.StringVar(value="Square/Blocky")
-        self.depth_var = tk.DoubleVar(value=0.10)
-        self.teeth_count = tk.IntVar(value=12)
-        self.jitter_var = tk.DoubleVar(value=0.0)
-        self.blend_softness = tk.IntVar(value=0)
+        self.style_var = tk.StringVar(value=self.config.get("style", "Square/Blocky"))
+        self.depth_var = tk.DoubleVar(value=self.config.get("depth", 0.10))
+        self.teeth_count = tk.IntVar(value=self.config.get("teeth", 12))
+        self.jitter_var = tk.DoubleVar(value=self.config.get("jitter", 0.0))
+        self.blend_softness = tk.IntVar(value=self.config.get("softness", 0))
         self.seed_var = tk.IntVar(value=random.randint(0, 99999))
         self.sky_input_path = tk.StringVar()
+        self.sky_rotation = tk.DoubleVar(value=0.0)
         self.sky_out_res = tk.IntVar(value=2048)
         self.zoom_level = 0.25
-        self.trans_mode_var = tk.StringVar(value="Linear")
+        self.trans_mode_var = tk.StringVar(value=self.config.get("trans_mode", "Linear"))
         self.trans_mode_var.trace_add("write", self.update_preview)
         self.trans_mode_var.trace_add("write", lambda *args: self.update_preview())
         self.style_var.trace_add("write", lambda *args: self.update_preview())
         
-        self.export_dds = tk.BooleanVar(value=True)
-        self.export_mat = tk.BooleanVar(value=True)
-        self.export_trn = tk.BooleanVar(value=True)
+        self.export_dds = tk.BooleanVar(value=self.config.get("exp_dds", True))
+        self.export_mat = tk.BooleanVar(value=self.config.get("exp_mat", True))
+        self.export_trn = tk.BooleanVar(value=self.config.get("exp_trn", True))
         
         # HG2 Conversion Control Variables
         self.hg2_target_zw = tk.IntVar(value=8) # Default 8 zones wide
@@ -72,28 +112,47 @@ class BZ98TRNArchitect:
         self.hg2_smooth_val = tk.IntVar(value=0)
 
         # Export Toggles
-        self.exp_png = tk.BooleanVar(value=False)
-        self.exp_dds = tk.BooleanVar(value=True)
-        self.exp_csv = tk.BooleanVar(value=True)
-        self.exp_trn = tk.BooleanVar(value=True)
-        self.exp_mat = tk.BooleanVar(value=True)
-        self.exp_normal = tk.BooleanVar(value=False)
-        self.exp_specular = tk.BooleanVar(value=False)
-        self.exp_emissive = tk.BooleanVar(value=False)
+        self.exp_png = tk.BooleanVar(value=self.config.get("exp_png", False))
+        self.exp_dds = tk.BooleanVar(value=self.config.get("exp_dds", True))
+        self.exp_csv = tk.BooleanVar(value=self.config.get("exp_csv", True))
+        self.exp_trn = tk.BooleanVar(value=self.config.get("exp_trn", True))
+        self.exp_mat = tk.BooleanVar(value=self.config.get("exp_mat", True))
+        self.exp_normal = tk.BooleanVar(value=self.config.get("exp_normal", False))
+        self.exp_specular = tk.BooleanVar(value=self.config.get("exp_specular", False))
+        self.exp_emissive = tk.BooleanVar(value=self.config.get("exp_emissive", False))
         
         self.source_dir = ""
         self.groups = {} 
         self.full_atlas_preview = None
         self.preview_tk = None
+        
+        self.style_presets = {
+            "Custom": {},
+            "Tech Base (Blocky)": {"style": "Square/Blocky", "depth": 0.1, "teeth": 12, "jitter": 0.0, "soft": 0},
+            "Rocky Terrain": {"style": "Sawtooth", "depth": 0.15, "teeth": 25, "jitter": 5.0, "soft": 1},
+            "Alien Organic": {"style": "Plasma/Circuit", "depth": 0.2, "teeth": 8, "jitter": 15.0, "soft": 0},
+            "Soft Snow/Sand": {"style": "Fractal Noise", "depth": 0.12, "teeth": 10, "jitter": 2.0, "soft": 8},
+            "Digital/Matrix": {"style": "Binary Dither", "depth": 0.05, "teeth": 40, "jitter": 0.0, "soft": 0}
+        }
+        self.selected_style_preset = tk.StringVar(value="Custom")
 
-        # Font/Icon logic
-        if getattr(sys, 'frozen', False):
-            self.base_dir = os.path.dirname(sys.executable)
-            self.resource_dir = sys._MEIPASS
-        else:
-            self.base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.resource_dir = self.base_dir
-            
+        # Stock Map Variables
+        self.stock_map_name = tk.StringVar()
+        self.stock_world_type = tk.StringVar(value="Moon")
+        self.stock_size_preset = tk.StringVar(value="Medium (5120m)")
+        self.stock_time = tk.IntVar(value=1100)
+        
+        # Lighting (RGB)
+        self.light_diffuse = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
+        self.light_ambient = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
+        self.light_specular = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
+        
+        # Audio
+        self.audio_track = tk.IntVar(value=27)
+        self.audio_loop_first = tk.IntVar(value=27)
+        self.audio_loop_last = tk.IntVar(value=27)
+        self.audio_loop_skip = tk.IntVar(value=-1)
+
         font_path = os.path.join(self.resource_dir, "bzone.ttf")
         if os.path.exists(font_path):
             self.custom_font_name = "BZONE"
@@ -115,6 +174,46 @@ class BZ98TRNArchitect:
         self.setup_styles()
         self.setup_ui()
         self.bind_events()
+
+    def load_config(self):
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    data = json.load(f)
+                    # Convert relative path back to absolute
+                    if "out_dir" in data and data["out_dir"] and not os.path.isabs(data["out_dir"]):
+                        data["out_dir"] = os.path.normpath(os.path.join(self.base_dir, data["out_dir"]))
+                    return data
+            except: pass
+        return {}
+
+    def on_close(self):
+        def make_rel(path):
+            if not path: return ""
+            try:
+                if os.path.splitdrive(path)[0].lower() == os.path.splitdrive(self.base_dir)[0].lower():
+                    return os.path.relpath(path, self.base_dir)
+            except: pass
+            return path
+
+        cfg = {
+            "planet_prefix": self.planet_var.get(),
+            "tile_res": self.tile_res_var.get(),
+            "trans_mode": self.trans_mode_var.get(),
+            "style": self.style_var.get(),
+            "depth": self.depth_var.get(),
+            "teeth": self.teeth_count.get(),
+            "jitter": self.jitter_var.get(),
+            "softness": self.blend_softness.get(),
+            "out_dir": make_rel(self.out_dir_var.get()),
+            "exp_dds": self.exp_dds.get(),
+            "exp_mat": self.exp_mat.get(),
+            "exp_trn": self.exp_trn.get(),
+            "exp_normal": self.exp_normal.get()
+        }
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(cfg, f, indent=4)
+        self.root.destroy()
 
     def setup_styles(self):
         style = ttk.Style()
@@ -280,9 +379,9 @@ class BZ98TRNArchitect:
                 out_img = out_img.transpose(Image.ROTATE_90)
 
                 out_img.save(out_path)
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"Converted & Rotated 90° CCW\nRes: {out_img.width}x{out_img.height}"))
+                self.log(f"Success: Converted & Rotated 90° CCW ({out_img.width}x{out_img.height})", "success")
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Conversion failed: {e}"))
+            self.log(f"Error: Conversion failed: {e}", "error")
         finally:
             self.root.after(0, lambda: self.btn_hg2_png.config(text="HG2 -> PNG", state="normal"))
 
@@ -355,32 +454,37 @@ class BZ98TRNArchitect:
                 f.write(header)
                 f.write(output_data)
                     
-            self.root.after(0, lambda: messagebox.showinfo("Success", f"Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})"))
+            self.log(f"Success: Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})", "success")
             
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to save HG2: {e}"))
+            self.log(f"Error: Failed to save HG2: {e}", "error")
         finally:
             self.root.after(0, lambda: self.btn_png_hg2.config(text="PNG -> HG2", state="normal"))
         
     # --- THE MISSING METHOD ---
-    def create_fine_tune_slider(self, parent, label, var, from_, to, res=1.0):
+    def create_fine_tune_slider(self, parent, label, var, from_, to, res=1.0, tip=None, command=None):
         frame = ttk.Frame(parent)
         frame.pack(fill="x", pady=2)
-        ttk.Label(frame, text=label, font=(self.custom_font_name, 9)).pack(side="top", anchor="w")
+        lbl = ttk.Label(frame, text=label, font=(self.custom_font_name, 9)); lbl.pack(side="top", anchor="w")
         inner = ttk.Frame(frame)
         inner.pack(fill="x")
         
+        if command is None:
+            command = self.update_preview
+            
         def adjust(delta):
             val = var.get() + delta
             var.set(round(max(from_, min(to, val)), 3))
-            self.update_preview()
+            command()
 
         ttk.Button(inner, text="<", command=lambda: adjust(-res), width=2).pack(side="left")
         scale = tk.Scale(inner, from_=from_, to=to, resolution=res, orient="horizontal", 
-                         variable=var, command=self.force_refresh, showvalue=True,
+                         variable=var, command=lambda v: command(), showvalue=True,
                          bg=BZ_BG, fg=BZ_FG, troughcolor="#1a1a1a", activebackground=BZ_GREEN, highlightthickness=0)
         scale.pack(side="left", fill="x", expand=True)
         ttk.Button(inner, text=">", command=lambda: adjust(res), width=2).pack(side="left")
+        
+        if tip: ToolTip(lbl, tip)
 
     def setup_ui(self):
         # 1. Create Notebook
@@ -390,6 +494,11 @@ class BZ98TRNArchitect:
         # 2. Setup TAB 1 (Atlas Generator)
         self.tab_trn = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_trn, text=" Atlas Creator ")
+
+        # 3. Setup TAB 2 (Stock Map Creator) - NEW
+        self.tab_stock = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_stock, text=" Stock Map Creator ")
+        self.setup_stock_tab()
 
         # --- TAB 1 CONTROLS ---
         left_container = ttk.Frame(self.tab_trn, width=360)
@@ -436,10 +545,15 @@ class BZ98TRNArchitect:
         self.style_dropdown = ttk.Combobox(ctrls, textvariable=self.style_var, state="readonly")
         self.style_dropdown.pack(fill="x", pady=5)
 
-        self.create_fine_tune_slider(ctrls, "Edge Depth:", self.depth_var, 0.0, 0.5, 0.01)
-        self.create_fine_tune_slider(ctrls, "Frequency (Teeth/Size):", self.teeth_count, 2, 80, 1)
-        self.create_fine_tune_slider(ctrls, "Random Jitter:", self.jitter_var, 0.0, 50.0, 0.5)
-        self.create_fine_tune_slider(ctrls, "Feathering (Blur):", self.blend_softness, 0, 50, 1)
+        ttk.Label(ctrls, text="STYLE PRESETS:").pack(anchor="w", pady=(10,0))
+        sp_menu = ttk.Combobox(ctrls, textvariable=self.selected_style_preset, values=list(self.style_presets.keys()), state="readonly")
+        sp_menu.pack(fill="x", pady=5)
+        sp_menu.bind("<<ComboboxSelected>>", self.apply_style_preset)
+
+        self.create_fine_tune_slider(ctrls, "Edge Depth:", self.depth_var, 0.0, 0.5, 0.01, "How far the transition pattern cuts into the tile.")
+        self.create_fine_tune_slider(ctrls, "Frequency (Teeth/Size):", self.teeth_count, 2, 80, 1, "Density of the pattern (e.g., number of sawteeth).")
+        self.create_fine_tune_slider(ctrls, "Random Jitter:", self.jitter_var, 0.0, 50.0, 0.5, "Randomizes the edges for a more organic look.")
+        self.create_fine_tune_slider(ctrls, "Feathering (Blur):", self.blend_softness, 0, 50, 1, "Softens the transition edges (good for snow/sand).")
 
         ttk.Button(ctrls, text="🎲 NEW SEED", command=self.cycle_seed).pack(fill="x", pady=5)
         self.info_label = ttk.Label(ctrls, text="Atlas Size: 0x0", foreground="#666666")
@@ -470,7 +584,7 @@ class BZ98TRNArchitect:
         ttk.Label(ctrls, text="OUTPUT DESTINATION:", font=(self.custom_font_name, 8, "bold")).pack(anchor="w")
         out_f = ttk.Frame(ctrls)
         out_f.pack(fill="x", pady=2)
-        self.out_dir_var = tk.StringVar(value="Export")
+        self.out_dir_var = tk.StringVar(value=self.config.get("out_dir", "Export"))
         ttk.Entry(out_f, textvariable=self.out_dir_var, font=(self.custom_font_name, 8)).pack(side="left", fill="x", expand=True)
         ttk.Button(out_f, text="...", command=self.browse_output, width=3).pack(side="left", padx=2)
 
@@ -492,6 +606,275 @@ class BZ98TRNArchitect:
         self.tab_help = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_help, text=" Help & About ")
         self.setup_help_tab()
+        
+        # --- LOG CONSOLE ---
+        self.log_frame = ttk.Frame(self.root, padding=5)
+        self.log_frame.pack(side="bottom", fill="x")
+        self.log_box = tk.Text(self.log_frame, height=6, state="disabled", bg="#050505", fg=BZ_FG, font=("Consolas", 9))
+        self.log_box.pack(fill="both", expand=True)
+        self.log_box.tag_config("info", foreground=BZ_CYAN)
+        self.log_box.tag_config("success", foreground=BZ_GREEN)
+        self.log_box.tag_config("error", foreground="#ff5555")
+        self.log_box.tag_config("warning", foreground="#ffff55")
+        self.log_box.tag_config("timestamp", foreground="#666666")
+
+    def setup_stock_tab(self):
+        container = ttk.Frame(self.tab_stock, padding=20)
+        container.pack(fill="both", expand=True)
+
+        # --- LEFT COLUMN: CONFIG ---
+        left_col = ttk.LabelFrame(container, text=" Map Configuration ", padding=15)
+        left_col.pack(side="left", fill="both", expand=True, padx=(0, 10))
+
+        # Map Name (Validated)
+        ttk.Label(left_col, text="Map Name (Max 8 chars, Alpha only):").pack(anchor="w")
+        vcmd = (self.root.register(self.validate_map_name), '%P')
+        entry_name = ttk.Entry(left_col, textvariable=self.stock_map_name, validate="key", validatecommand=vcmd)
+        entry_name.pack(fill="x", pady=(0, 10))
+        ToolTip(entry_name, "Internal name for the map (e.g., 'MULTI01'). Must be 8 letters or less.")
+
+        # World Type
+        ttk.Label(left_col, text="World / Biome:").pack(anchor="w")
+        worlds = ["Moon", "Achilles", "Europa", "Venus", "Mars", "Io", "Ganymede", "Elysium"]
+        ttk.Combobox(left_col, textvariable=self.stock_world_type, values=worlds, state="readonly").pack(fill="x", pady=(0, 10))
+
+        # Size
+        ttk.Label(left_col, text="Map Size:").pack(anchor="w")
+        ttk.Combobox(left_col, textvariable=self.stock_size_preset, values=self.map_presets, state="readonly").pack(fill="x", pady=(0, 10))
+
+        # Time
+        ttk.Label(left_col, text="Time of Day (0-2400):").pack(anchor="w")
+        tk.Scale(left_col, variable=self.stock_time, from_=0, to=2400, orient="horizontal", 
+                 bg=BZ_BG, fg=BZ_FG, troughcolor="#1a1a1a", activebackground=BZ_GREEN, highlightthickness=0).pack(fill="x", pady=(0, 10))
+
+        # Audio Settings (Undocumented Params)
+        ttk.Label(left_col, text="Audio / CD Track Settings:", foreground=BZ_CYAN).pack(anchor="w", pady=(10, 5))
+        
+        aud_grid = ttk.Frame(left_col)
+        aud_grid.pack(fill="x")
+        
+        for i, (label, var, tip) in enumerate([
+            ("Track:", self.audio_track, "The specific CD track index to play when the mission starts."),
+            ("Loop First:", self.audio_loop_first, "The starting track index of the ambient playlist loop."),
+            ("Loop Last:", self.audio_loop_last, "The ending track index of the ambient playlist loop."),
+            ("Loop Skip:", self.audio_loop_skip, "A track index within the range to SKIP (e.g. victory themes). Set -1 to skip nothing.")
+        ]):
+            ttk.Label(aud_grid, text=label, font=("Consolas", 8)).grid(row=i//2, column=(i%2)*2, sticky="w", padx=5)
+            ent = ttk.Entry(aud_grid, textvariable=var, width=5)
+            ent.grid(row=i//2, column=(i%2)*2+1, sticky="w")
+            ToolTip(ent, tip)
+
+        # --- RIGHT COLUMN: LIGHTING & BUILD ---
+        right_col = ttk.LabelFrame(container, text=" Lighting & Build ", padding=15)
+        right_col.pack(side="right", fill="both", expand=True, padx=(10, 0))
+
+        def create_rgb_slider(parent, label, vars):
+            f = ttk.Frame(parent)
+            f.pack(fill="x", pady=5)
+            ttk.Label(f, text=label, font="bold").pack(anchor="w")
+            
+            sub = ttk.Frame(f)
+            sub.pack(fill="x")
+            
+            colors = {"R": "#ff5555", "G": "#55ff55", "B": "#5555ff"}
+            
+            for i, (col, var) in enumerate(zip(["R", "G", "B"], vars)):
+                c_hex = colors[col]
+                l = ttk.Label(sub, text=col, foreground=c_hex)
+                l.pack(side="left", padx=(5, 0))
+                s = tk.Scale(sub, variable=var, from_=0, to=255, orient="horizontal", showvalue=0,
+                             bg=BZ_BG, troughcolor="#1a1a1a", activebackground=c_hex, highlightthickness=0)
+                s.pack(side="left", fill="x", expand=True)
+
+        create_rgb_slider(right_col, "Sun / Diffuse Color", self.light_diffuse)
+        create_rgb_slider(right_col, "Ambient Color", self.light_ambient)
+        create_rgb_slider(right_col, "Specular Color", self.light_specular)
+        ttk.Button(right_col, text="RESET LIGHTING", command=self.reset_lighting_defaults).pack(fill="x", pady=5)
+
+        ttk.Separator(right_col, orient="horizontal").pack(fill="x", pady=20)
+
+        self.btn_stock_gen = ttk.Button(right_col, text="GENERATE MAP FILES", command=self.generate_stock_map, style="Success.TButton")
+        self.btn_stock_gen.pack(fill="x", pady=10)
+
+    def reset_lighting_defaults(self):
+        for group in [self.light_diffuse, self.light_ambient, self.light_specular]:
+            for var in group:
+                var.set(255)
+
+    def validate_map_name(self, P):
+        if len(P) > 8: return False
+        if not P.isalpha() and P != "": return False
+        return True
+
+    def generate_stock_map(self):
+        name = self.stock_map_name.get()
+        if not name:
+            messagebox.showerror("Error", "Map Name is required.")
+            return
+        
+        out_dir = filedialog.askdirectory(title="Select Output Folder")
+        if not out_dir: return
+
+        # Map Preset to Zones logic
+        # Assuming 1 zone = 1280m (standard BZ1 chunk)
+        # Tiny (1280m) -> 1x1
+        # Small (2560m) -> 2x2
+        # Medium (5120m) -> 4x4
+        preset_map = {
+            "Tiny (1280m)": 1,
+            "Small (2560m)": 2,
+            "Medium (5120m)": 4,
+            "Large (10240m)": 8,
+            "Huge (20480m)": 16
+        }
+        zones = preset_map.get(self.stock_size_preset.get(), 4)
+
+        cfg = {
+            "name": name,
+            "world": self.stock_world_type.get(),
+            "zones": zones,
+            "out_dir": out_dir
+        }
+        
+        self.btn_stock_gen.config(text="GENERATING...", state="disabled")
+        threading.Thread(target=self._generate_stock_map_worker, args=(cfg,), daemon=True).start()
+
+    def _generate_stock_map_worker(self, cfg):
+        try:
+            name = cfg["name"]
+            zones = cfg["zones"]
+            world = cfg["world"].lower()
+            world_key = cfg["world"] # Case sensitive for dictionary lookup
+            out_dir = cfg["out_dir"]
+            
+            # 1. Generate Flat HG2
+            # Depth 7 = 128px per zone (Standard BZ1)
+            depth = 7
+            zone_res = 128
+            
+            # Header: version(1), depth, x_zones, z_zones, 10, 0
+            header = struct.pack("<HHHHHH", 1, depth, zones, zones, 10, 0)
+            
+            # Create flat data (mid-grey or 0?) BZ1 usually 0 is bottom.
+            # Let's use 0 for flat ground.
+            total_res = zones * zone_res
+            flat_data = np.zeros((total_res, total_res), dtype=np.uint16)
+            
+            hg2_path = os.path.join(out_dir, f"{name}.hg2")
+            with open(hg2_path, "wb") as f:
+                f.write(header)
+                # Pack data zone by zone
+                for zy in range(zones):
+                    for zx in range(zones):
+                        # Extract chunk (all zeros here)
+                        chunk = flat_data[zy*zone_res:(zy+1)*zone_res, zx*zone_res:(zx+1)*zone_res]
+                        f.write(chunk.tobytes())
+
+            # 2. Generate TRN File
+            trn_path = os.path.join(out_dir, f"{name}.trn")
+            
+            # Get Template Data
+            tpl = self.get_stock_template_data(world_key)
+            
+            # Prepare NormalView block with user Time override
+            nv_block = tpl["NormalView"]
+            nv_block = re.sub(r"Time\s*=\s*\d+", f"Time={self.stock_time.get()}", nv_block)
+            
+            # Map Size in Meters
+            size_m = zones * 1280
+            
+            with open(trn_path, "w") as f:
+                f.write(f"[Size]\nMinX=0\nMinZ=0\nWidth={size_m}\nDepth={size_m}\nHeight=100\n\n")
+                
+                f.write(f"{nv_block}\n\n")
+                
+                # Write Static Content (Atlases, Sky, Clouds, Stars, TextureTypes, Color)
+                f.write(f"{tpl['Static']}\n\n")
+                
+                f.write("[World]\n")
+                f.write(f"MusicTrack={self.audio_track.get()}\n")
+                f.write(f"MusicLoopFirst={self.audio_loop_first.get()}\n")
+                f.write(f"MusicLoopLast={self.audio_loop_last.get()}\n")
+                f.write(f"MusicLoopSkip={self.audio_loop_skip.get()}\n\n")
+                f.write("[Sun_Ambient]\n")
+                f.write(f"Red = {self.light_ambient[0].get()/255.0:.4f}f\n")
+                f.write(f"Green = {self.light_ambient[1].get()/255.0:.4f}f\n")
+                f.write(f"Blue = {self.light_ambient[2].get()/255.0:.4f}f\n\n")
+
+                f.write("[Sun_Diffuse]\n")
+                f.write(f"Red = {self.light_diffuse[0].get()/255.0:.4f}f\n")
+                f.write(f"Green = {self.light_diffuse[1].get()/255.0:.4f}f\n")
+                f.write(f"Blue = {self.light_diffuse[2].get()/255.0:.4f}f\n\n")
+
+                f.write("[Sun_Specular]\n")
+                f.write(f"Red = {self.light_specular[0].get()/255.0:.4f}f\n")
+                f.write(f"Green = {self.light_specular[1].get()/255.0:.4f}f\n")
+                f.write(f"Blue = {self.light_specular[2].get()/255.0:.4f}f\n\n")
+
+            self.log(f"Success: Generated {name}.hg2 and {name}.trn in {out_dir}", "success")
+            
+        except Exception as e:
+            self.log(f"Stock Gen Error: {e}", "error")
+        finally:
+            self.root.after(0, lambda: self.btn_stock_gen.config(text="GENERATE MAP FILES", state="normal"))
+
+    def get_stock_template_data(self, world):
+        """Returns the TRN template blocks for the specified world."""
+        
+        # Defaults
+        nv_default = "[NormalView]\nTime=1200\nFogStart=100\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0"
+        
+        templates = {
+            "Moon": {
+                "NormalView": "[NormalView]\nTime=900\nFogStart=175\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=90\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=0\nTerrainShadowLuma=40\nCarAmbient=30",
+                "Static": """[Atlases]\nMaterialName = mn_detail_atlas\n\n[Sky]\nSunTexture=sun.0\nSkyHeight = 110\nSkyTexture=\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Stars]\nRadius = 1000\nTexture00 = earth.map\nAlpha00 = 0\nSize00 = 200\nAzimuth00 = 150\nElevation00 = 10\nRoll00 = 300\nTexture01 = milkyway.map\nColor01 = "255 255 255 64"\nAlpha01 = 0\nWidth01 = 4000\nHeight01 = 1000\nAzimuth01 = -50\nElevation01 = 40\nRoll01 = 40\n\n[StarList]\nSolid = 0\nLayerHeight = 15\nTexture = stars.map\nRadius = 1000\nStart0 = 0\nEnd0 = 360\nSize0 = 350\nCount0 = 13\nStart1 = 0\nEnd1 = 360\nSize1 = 350\nCount1 = 10\nStart2 = 0\nEnd2 = 360\nSize2 = 350\nCount2 = 11\n\n[Color]\nPalette=MOON.ACT\nLuma=MOON.LUM\nTranslucency=MOON.TBL\nAlpha=MOON.ALB\n\n[TextureType0]\nFlatColor= 104\nSolidA0 = mn00sA0.map\nSolidA1 = mn00sA1.map\nSolidA2 = mn00sA2.map\nSolidA3 = mn00sA3.map\nSolidb0 = mn00sA0.map\nSolidb1 = mn00sA1.map\nSolidb2 = mn00sA2.map\nSolidb3 = mn00sA3.map\nSolidc0 = mn00sA0.map\nSolidc1 = mn00sA1.map\nSolidc2 = mn00sA2.map\nSolidc3 = mn00sA3.map\nSolidd0 = mn00sC0.map\nSolidd1 = mn00sC1.map\nSolidd2 = mn00sC2.map\nSolidd3 = mn00sC3.map\nCapTo3_A0 = mn03cA0.map\nCapTo3_A1 = mn03cA1.map\nCapTo3_A2 = mn03cA2.map\nCapTo3_A3 = mn03cA3.map\nDiagonalTo3_A0 = mn03dA0.map\nDiagonalTo3_A1 = mn03dA1.map\nDiagonalTo3_A2 = mn03dA2.map\nDiagonalTo3_A3 = mn03dA3.map\nCapTo4_A0 = mn04cA0.map\nCapTo4_A1 = mn04cA1.map\nCapTo4_A2 = mn04cA2.map\nCapTo4_A3 = mn04cA3.map\nDiagonalTo4_A0 = mn04dA0.map\nDiagonalTo4_A1 = mn04dA1.map\nDiagonalTo4_A2 = mn04dA2.map\nDiagonalTo4_A3 = mn04dA3.map\n\n[TextureType3]\nFlatColor= 196\nSolidA0 = mn33sA0.map\nSolidA1 = mn33sA1.map\nSolidA2 = mn33sA2.map\nSolidA3 = mn33sA3.map\n\n[TextureType4]\nFlatColor= 7\nSolidA0 = mn44sA0.map\nSolidA1 = mn44sA1.map\nSolidA2 = mn44sA2.map\nSolidA3 = mn44sA3.map\nSolidB0 = mn44sB0.map\nSolidB1 = mn44sB1.map\nSolidB2 = mn44sB2.map\nSolidB3 = mn44sB3.map\n\n[TextureType5]\nFlatColor= 7\nSolidA0 = mn55sA0.map\nSolidA1 = mn55sA1.map\nSolidA2 = mn55sA2.map\nSolidA3 = mn55sA3.map\n\n[TextureType6]\nFlatColor= 7\nSolidA0 = mn66sA0.map\nSolidA1 = mn66sA1.map\nSolidA2 = mn66sA2.map\nSolidA3 = mn66sA3.map"""
+            },
+            "Mars": {
+                "NormalView": "[NormalView]\nTime=900\nFogStart=120\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=1\nTerrainShadowLuma=20\nCarAmbient=20",
+                "Static": """[Atlases]\nMaterialName = ma_detail_atlas\n\n[Sky]\nSunTexture=sun.0\nSkyHeight = 110\nSkyTexture= mars.map\nBackdropTexture =\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Clouds]\nCount = 8\nType = 1\nTileSize = 1000\nTexture0 = acloud2.map\nSize0 = 500\nHeight0 = 100\nTexture1 = acloud2.map\nSize1 = 500\nHeight1 = 90\nTexture2 = acloud2.map\nSize2 = 500\nHeight2 = 80\n\n[Color]\nPalette=MARS.ACT\nLuma=MARS.LUM\nTranslucency=MARS.TBL\nAlpha=MARS.ALB\n\n[TextureType0]\nFlatColor= 108\nSolidA0 = ma00sA0.map\nSolidA1 = ma00sA1.map\nSolidA2 = ma00sA2.map\nSolidA3 = ma00sA3.map\nSolidB0 = ma00sB0.map\nSolidB1 = ma00sB1.map\nSolidB2 = ma00sB2.map\nSolidB3 = ma00sB3.map\nSolidC0 = ma00sC0.map\nSolidC1 = ma00sC1.map\nSolidC2 = ma00sC2.map\nSolidC3 = ma00sC3.map\nCapTo1_A0 = ma01cA0.map\nCapTo1_A1 = ma01cA1.map\nCapTo1_A2 = ma01cA2.map\nCapTo1_A3 = ma01cA3.map\nDiagonalTo1_A0 = ma01dA0.map\nDiagonalTo1_A1 = ma01dA1.map\nDiagonalTo1_A2 = ma01dA2.map\nDiagonalTo1_A3 = ma01dA3.map\nCapTo4_A0 = ma04cA0.map\nCapTo4_A1 = ma04cA1.map\nCapTo4_A2 = ma04cA2.map\nCapTo4_A3 = ma04cA3.map\nCapTo4_B0 = ma04cB0.map\nCapTo4_B1 = ma04cB1.map\nCapTo4_B2 = ma04cB2.map\nCapTo4_B3 = ma04cB3.map\nDiagonalTo4_A0 = ma04dA0.map\nDiagonalTo4_A1 = ma04dA1.map\nDiagonalTo4_A2 = ma04dA2.map\nDiagonalTo4_A3 = ma04dA3.map\n\n[TextureType1]\nFlatColor= 160\nSolidA0 = ma11sA0.map\nSolidA1 = ma11sA1.map\nSolidA2 = ma11sA2.map\nSolidA3 = ma11sA3.map\nSolidB0 = ma11sA0.map\nSolidB1 = ma11sA1.map\nSolidB2 = ma11sA2.map\nSolidB3 = ma11sA3.map\nSolidC0 = ma11sB0.map\nSolidC1 = ma11sB1.map\nSolidC2 = ma11sB2.map\nSolidC3 = ma11sB3.map\nSolidD0 = ma11sC0.map\nSolidD1 = ma11sC1.map\nSolidD2 = ma11sC2.map\nSolidD3 = ma11sC3.map\nCapTo3_A0 = ma13cA0.map\nCapTo3_A1 = ma13cA1.map\nCapTo3_A2 = ma13cA2.map\nCapTo3_A3 = ma13cA3.map\nDiagonalTo3_A0 = ma13dA0.map\nDiagonalTo3_A1 = ma13dA1.map\nDiagonalTo3_A2 = ma13dA2.map\nDiagonalTo3_A3 = ma13dA3.map\n\n[TextureType2]\nFlatColor= 192\nSolidA0 = ma22sA0.map\nSolidA1 = ma22sA1.map\nSolidA2 = ma22sA2.map\nSolidA3 = ma22sA3.map\n\n[TextureType3]\nFlatColor= 195\nSolidA0 = ma33sA0.map\nSolidA1 = ma33sA1.map\nSolidA2 = ma33sA2.map\nSolidA3 = ma33sA3.map\n\n[TextureType4]\nFlatColor= 4\nSolidA0 = ma44sA0.map\nSolidA1 = ma44sA1.map\nSolidA2 = ma44sA2.map\nSolidA3 = ma44sA3.map\nSolidB0 = ma44sB0.map\nSolidB1 = ma44sB1.map\nSolidB2 = ma44sB2.map\nSolidB3 = ma44sB3.map\nSolidC0 = ma44sC0.map\nSolidC1 = ma44sC1.map\nSolidC2 = ma44sC2.map\nSolidC3 = ma44sC3.map"""
+            },
+            "Venus": {
+                "NormalView": "[NormalView]\nTime=1200\nFogStart=30\nFogEnd=100\nFogBreak=30\nVisibilityRange=100\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=1\nTerrainShadowLuma=30\nCarAmbient=20",
+                "Static": """[Atlases]\nMaterialName = ve_detail_atlas\n\n[Sky]\nSunTexture=sun.0\nSkyType=0\nSkyHeight = 110\nSkyTexture= venus.map\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[LightningBolt]\nminDelay=5000\nmaxDelay=30000\nBolts=3\nDuration=100\nColor=20\nDistance=75\nSound=lstart.wav\n\n[Color]\nPalette=venus.ACT\nLuma=venus.LUM\nTranslucency=venus.TBL\nAlpha=venus.ALB\n\n[TextureType0]\nFlatColor= 124\nSolidA0 = ve00sA0.map\nSolidA1 = ve00sA1.map\nSolidA2 = ve00sA2.map\nSolidA3 = ve00sA3.map\nCapTo1_A0 = ve01cA0.map\nCapTo1_A1 = ve01cA1.map\nCapTo1_A2 = ve01cA2.map\nCapTo1_A3 = ve01cA3.map\nDiagonalTo1_A0 = ve01dA0.map\nDiagonalTo1_A1 = ve01dA1.map\nDiagonalTo1_A2 = ve01dA2.map\nDiagonalTo1_A3 = ve01dA3.map\nCapTo2_A0 = ve02cA0.map\nCapTo2_A1 = ve02cA1.map\nCapTo2_A2 = ve02cA2.map\nCapTo2_A3 = ve02cA3.map\nCapTo2_B0 = ve02cB0.map\nCapTo2_B1 = ve02cB1.map\nCapTo2_B2 = ve02cB2.map\nCapTo2_B3 = ve02cB3.map\nDiagonalTo2_A0 = ve02dA0.map\nDiagonalTo2_A1 = ve02dA1.map\nDiagonalTo2_A2 = ve02dA2.map\nDiagonalTo2_A3 = ve02dA3.map\nCapTo3_A0 = ve03cA0.map\nCapTo3_A1 = ve03cA1.map\nCapTo3_A2 = ve03cA2.map\nCapTo3_A3 = ve03cA3.map\nDiagonalTo3_A0 = ve03dA0.map\nDiagonalTo3_A1 = ve03dA1.map\nDiagonalTo3_A2 = ve03dA2.map\nDiagonalTo3_A3 = ve03dA3.map\n\n[TextureType1]\nFlatColor= 96\nSolidA0 = ve11sA0.map\nSolidA1 = ve11sA1.map\nSolidA2 = ve11sA2.map\nSolidA3 = ve11sA3.map\n\n[TextureType2]\nFlatColor= 167\nSolidA0 = ve22sA0.map\nSolidA1 = ve22sA1.map\nSolidA2 = ve22sA2.map\nSolidA3 = ve22sA3.map\nSolidB0 = ve22sB0.map\nSolidB1 = ve22sB1.map\nSolidB2 = ve22sB2.map\nSolidB3 = ve22sB3.map\n\n[TextureType3]\nFlatColor= 203\nSolidA0 = ve33sA0.map\nSolidA1 = ve33sA1.map\nSolidA2 = ve33sA2.map\nSolidA3 = ve33sA3.map\n\n[TextureType4]\nFlatColor= 207\nSolidA0 = ve44sA0.map\nSolidA1 = ve44sA1.map\nSolidA2 = ve44sA2.map\nSolidA3 = ve44sA3.map"""
+            },
+            "Io": {
+                "NormalView": "[NormalView]\nTime=1200\nLava=1\nFogStart=175\nFogEnd=250\nFogBreak=50\nVisibilityRange=250\nIntensity=90\nAmbient=10\nFlatRange=250\nShadowLuma=0\nFogDirection=0\nTerrainShadowLuma=20\nCarAmbient=30\nwave=1",
+                "Static": """[Atlases]\nMaterialName = io_detail_atlas\n\n[Sky]\nSunTexture=\nSkyType= 1\nSkyHeight = 200\nSkyTexture= jupiter.map\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Stars]\nRadius = 500\nTexture00 = stars.map\nSize00 = 100\nAzimuth00 = 0\nElevation00 = 5\nTexture01 = stars.map\nSize01 = 100\nAzimuth01 = 15\nElevation01 = 5\nRoll01 = 176\nTexture02 = stars.map\nSize02 = 100\nAzimuth02 = 30\nElevation02 = 5\nRoll16 = 90\nTexture03 = stars.map\nSize03 = 100\nAzimuth03 = 45\nElevation03 = 5\nTexture04 = stars.map\nSize04 = 100\nAzimuth04 = 60\nElevation04 = 5\nRoll04 = 78\nTexture05 = stars.map\nSize05 = 100\nAzimuth05 = 75\nElevation05 = 5\nRoll05 = 300\nTexture06 = stars.map\nSize06 = 100\nAzimuth06 = 90\nElevation06 = 5\nRoll16 = 180\nTexture07 = stars.map\nSize07 = 100\nAzimuth07 = 105\nElevation07 = 5\nTexture08 = stars.map\nSize08 = 100\nAzimuth08 = 120\nElevation08 = 5\nTexture09 = stars.map\nSize09 = 100\nAzimuth09 = 135\nElevation09 = 5\nRoll16 = 90\nTexture10 = stars.map\nSize10 = 100\nAzimuth10 = 150\nElevation10 = 5\nTexture11 = stars.map\nSize11 = 100\nAzimuth11 = 165\nElevation11 = 5\nRoll16 = 180\nTexture12 = stars.map\nSize12 = 100\nAzimuth12 = 180\nElevation12 = 5\nTexture13 = stars.map\nSize13 = 100\nAzimuth13 = 195\nElevation13 = 5\nRoll13 = 176\nTexture14 = stars.map\nSize14 = 100\nAzimuth14 = 210\nElevation14 = 5\nTexture15 = stars.map\nSize15 = 100\nAzimuth15 = 225\nElevation15 = 5\nTexture16 = stars.map\nSize16 = 100\nAzimuth16 = 240\nElevation16 = 5\nRoll16 = 78\nTexture17 = stars.map\nSize17 = 100\nAzimuth17 = 255\nElevation17 = 5\nRoll17 = 300\nTexture18 = stars.map\nSize18 = 100\nAzimuth18 = 270\nElevation18 = 5\nTexture19 = stars.map\nSize19 = 100\nAzimuth19 = 285\nElevation19 = 5\nTexture20 = stars.map\nSize20 = 100\nAzimuth20 = 300\nElevation20 = 5\nRoll16 = 180\nTexture21 = stars.map\nSize21 = 100\nAzimuth21 = 315\nElevation21 = 5\nTexture22 = stars.map\nSize22 = 100\nAzimuth22 = 345\nElevation22 = 5\nTexture23 = stars.map\nSize23 = 100\nAzimuth23 = 360\nElevation23 = 5\nRoll16 = 180\n\n[Color]\nPalette=io.ACT\nLuma=io.LUM\nTranslucency=io.TBL\nAlpha=io.ALB\n\n[TextureType0]\nFlatColor= 134\nSolidA0 = io00sA0.map\nSolidA1 = io00sA1.map\nSolidA2 = io00sA2.map\nSolidA3 = io00sA3.map\nSolidB0 = io00sA0.map\nSolidB1 = io00sA1.map\nSolidB2 = io00sA2.map\nSolidB3 = io00sA3.map\nSolidC0 = io00sB0.map\nSolidC1 = io00sB1.map\nSolidC2 = io00sB2.map\nSolidC3 = io00sB3.map\nSolidD0 = io00sC0.map\nSolidD1 = io00sC1.map\nSolidD2 = io00sC2.map\nSolidD3 = io00sC3.map\nCapTo1_A0 = io01cA0.map\nCapTo1_A1 = io01cA1.map\nCapTo1_A2 = io01cA2.map\nCapTo1_A3 = io01cA3.map\nDiagonalTo1_A0 = io01dA0.map\nDiagonalTo1_A1 = io01dA1.map\nDiagonalTo1_A2 = io01dA2.map\nDiagonalTo1_A3 = io01dA3.map\nCapTo3_A0 = io03cA0.map\nCapTo3_A1 = io03cA1.map\nCapTo3_A2 = io03cA2.map\nCapTo3_A3 = io03cA3.map\nDiagonalTo3_A0 = io03dA0.map\nDiagonalTo3_A1 = io03dA1.map\nDiagonalTo3_A2 = io03dA2.map\nDiagonalTo3_A3 = io03dA3.map\n\n[TextureType1]\nFlatColor= 96\nSolidA0 = io11sA0.map\nSolidA1 = io11sA1.map\nSolidA2 = io11sA2.map\nSolidA3 = io11sA3.map\n\n[TextureType3]\nFlatColor= 112\nSolidA0 = io33sA0.map\nSolidA1 = io33sA1.map\nSolidA2 = io33sA2.map\nSolidA3 = io33sA3.map\nSolidB0 = io33sB0.map\nSolidB1 = io33sB1.map\nSolidB2 = io33sB2.map\nSolidB3 = io33sB3.map\nSolidC0 = io33sA0.map\nSolidC1 = io33sA1.map\nSolidC2 = io33sA2.map\nSolidC3 = io33sA3.map\nSolidD0 = io33sA0.map\nSolidD1 = io33sA1.map\nSolidD2 = io33sA2.map\nSolidD3 = io33sA3.map\nCapTo4_A0 = io34ca0.map\nCapTo4_A1 = io34ca1.map\nCapTo4_A2 = io34ca2.map\nCapTo4_A3 = io34ca3.map\nDiagonalTo4_A0 = io34dA0.map\nDiagonalTo4_A1 = io34dA1.map\nDiagonalTo4_A2 = io34dA2.map\nDiagonalTo4_A3 = io34dA3.map\n\n[TextureType4]\nFlatColor= 208\nSolidA0 = io44sA0.map\nSolidA1 = io44sA1.map\nSolidA2 = io44sA2.map\nSolidA3 = io44sA3.map\nCapTo5_A0 = io45ca0.map\nCapTo5_A1 = io45ca1.map\nCapTo5_A2 = io45ca2.map\nCapTo5_A3 = io45ca3.map\nCapTo5_B0 = io45cb0.map\nCapTo5_B1 = io45cb1.map\nCapTo5_B2 = io45cb2.map\nCapTo5_B3 = io45cb3.map\nDiagonalTo5_A0 = io45dA0.map\nDiagonalTo5_A1 = io45dA1.map\nDiagonalTo5_A2 = io45dA2.map\nDiagonalTo5_A3 = io45dA3.map\n\n[TextureType5]\nFlatColor= 4\nSolidA0 = io55sA0.map\nSolidA1 = io55sA1.map\nSolidA2 = io55sA2.map\nSolidA3 = io55sA3.map\nSolidB0 = io55sB0.map\nSolidB1 = io55sB1.map\nSolidB2 = io55sB2.map\nSolidB3 = io55sB3.map\nSolidC0 = io55sC0.map\nSolidC1 = io55sC1.map\nSolidC2 = io55sC2.map\nSolidC3 = io55sC3.map"""
+            },
+            "Europa": {
+                "NormalView": "[NormalView]\nTime=1500\nFogStart=175\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=90\nAmbient=0\nFlatRange=300\nShadowLuma=0\nFogDirection=0\nTerrainShadowLuma=20\nCarAmbient=30",
+                "Static": """[Atlases]\nMaterialName = eu_detail_atlas\n\n[Sky]\nSunTexture= sun.0\nSkyType= 0\nSkyHeight = 110\nSkyTexture= \nBackdropTexture = \nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Stars]\nRadius = 1000\nTexture00 = smjovian.map\nAlpha00 = 0\nSize00 = 350\nAzimuth00 = 210\nElevation00 = 35\nRoll00 = 300\n\n[StarList]\nSolid = 0\nLayerHeight = 15\nTexture = stars.map\nRadius = 1000\nStart0 = 0\nEnd0 = 360\nSize0 = 350\nCount0 = 13\nStart1 = 220\nEnd1 = 560\nSize1 = 350\nCount1 = 10 \nStart2 = 220\nEnd2 = 560\nSize2 = 350\nCount2 = 11\n\n[Color]\nPalette=europa.ACT\nLuma=europa.LUM\nTranslucency=europa.TBL\nAlpha=europa.ALB\n\n[TextureType0]\nFlatColor= 201\nSolidA0 = eu00sA0.map\nSolidA1 = eu00sA1.map\nSolidA2 = eu00sA2.map\nSolidA3 = eu00sA3.map\nSolidb0 = eu00sA0.map\nSolidb1 = eu00sA1.map\nSolidb2 = eu00sA2.map\nSolidb3 = eu00sA3.map\nSolidc0 = eu00sB0.map\nSolidc1 = eu00sB1.map\nSolidc2 = eu00sB2.map\nSolidc3 = eu00sB3.map\nSolidd0 = eu00sA0.map\nSolidd1 = eu00sA1.map\nSolidd2 = eu00sA2.map\nSolidd3 = eu00sA3.map\nCapTo1_A0 = eu01cA0.map\nCapTo1_A1 = eu01cA1.map\nCapTo1_A2 = eu01cA2.map\nCapTo1_A3 = eu01cA3.map\nDiagonalTo1_A0 = eu01dA0.map\nDiagonalTo1_A1 = eu01dA1.map\nDiagonalTo1_A2 = eu01dA2.map\nDiagonalTo1_A3 = eu01dA3.map\nCapTo4_A0 = eu04cA0.map\nCapTo4_A1 = eu04cA1.map\nCapTo4_A2 = eu04cA2.map\nCapTo4_A3 = eu04cA3.map\nDiagonalTo4_A0 = eu04dA0.map\nDiagonalTo4_A1 = eu04dA1.map\nDiagonalTo4_A2 = eu04dA2.map\nDiagonalTo4_A3 = eu04dA3.map\n\n[TextureType1]\nFlatColor= 131\nSolidA0 = eu11sA0.map\nSolidA1 = eu11sA1.map\nSolidA2 = eu11sA2.map\nSolidA3 = eu11sA3.map\nCapTo2_A0 = eu12cA0.map\nCapTo2_A1 = eu12cA1.map\nCapTo2_A2 = eu12cA2.map\nCapTo2_A3 = eu12cA3.map\nDiagonalTo2_A0 = eu12dA0.map\nDiagonalTo2_A1 = eu12dA1.map\nDiagonalTo2_A2 = eu12dA2.map\nDiagonalTo2_A3 = eu12dA3.map\n\n[TextureType2]\nFlatColor= 101\nSolidA0 = eu22sA0.map\nSolidA1 = eu22sA1.map\nSolidA2 = eu22sA2.map\nSolidA3 = eu22sA3.map\nCapTo3_A0 = eu23cA0.map\nCapTo3_A1 = eu23cA1.map\nCapTo3_A2 = eu23cA2.map\nCapTo3_A3 = eu23cA3.map\nDiagonalTo3_A0 = eu23dA0.map\nDiagonalTo3_A1 = eu23dA1.map\nDiagonalTo3_A2 = eu23dA2.map\nDiagonalTo3_A3 = eu23dA3.map\n\n[TextureType3]\nFlatColor= 177\nSolidA0 = eu33sA0.map\nSolidA1 = eu33sA1.map\nSolidA2 = eu33sA2.map\nSolidA3 = eu33sA3.map\n\n[TextureType4]\nFlatColor= 206\nSolidA0 = eu44sA0.map\nSolidA1 = eu44sA1.map\nSolidA2 = eu44sA2.map\nSolidA3 = eu44sA3.map\nSolidb0 = eu44sB0.map\nSolidb1 = eu44sB1.map\nSolidb2 = eu44sB2.map\nSolidb3 = eu44sB3.map\nSolidc0 = eu44sC0.map\nSolidc1 = eu44sC1.map\nSolidc2 = eu44sC2.map\nSolidc3 = eu44sC3.map"""
+            },
+            "Ganymede": {
+                "NormalView": "[NormalView]\nTime=900\nFogStart=175\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=90\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=0\nTerrainShadowLuma=40\nCarAmbient=30",
+                "Static": """[Atlases]\nMaterialName = ga_detail_atlas\n\n[Sky]\nSunTexture= sun.0\nSkyType= 0\nSkyHeight = 130\nSkyTexture= \nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Stars]\nRadius = 401\nTexture00 = ganyjup.map\nAlpha00 = 0\nSize00 = 150\nAzimuth00 = 180\nElevation00 = 25\nRoll00 = 0\n\n[StarList]\nSolid = 0\nLayerHeight = 15\nTexture = stars.map\nRadius = 1000\nStart0 = 235\nEnd0 = 510\nSize0 = 350\nCount0 = 12\nStart1 = 235\nEnd1 = 510\nSize1 = 350\nCount1 = 9 \nStart2 = 0\nEnd2 = 360\nSize2 = 350\nCount2 = 11\n\n[Color]\nPalette=ganymede.ACT\nLuma=ganymede.LUM\nTranslucency=ganymede.TBL\nAlpha=ganymede.ALB\n\n[TextureType0]\nFlatColor= 201\nSolidA0 = Ga00sa0.map\nSolidA1 = Ga00sa1.map\nSolidA2 = Ga00sa2.map\nSolidA3 = Ga00sa3.map\nSolidb0 = Ga00sb0.map\nSolidb1 = Ga00sb1.map\nSolidb2 = Ga00sb2.map\nSolidb3 = Ga00sb3.map\nSolidc0 = Ga00sc0.map\nSolidc1 = Ga00sc1.map\nSolidc2 = Ga00sc2.map\nSolidc3 = Ga00sc3.map\nDiagonalTo1_A0 = Ga01da0.map\nDiagonalTo1_A1 = Ga01da1.map\nDiagonalTo1_A2 = Ga01da2.map\nDiagonalTo1_A3 = Ga01da3.map\nCapTo1_A0 = Ga01ca0.map\nCapTo1_A1 = Ga01ca1.map\nCapTo1_A2 = Ga01ca2.map\nCapTo1_A3 = Ga01ca3.map\nDiagonalTo4_A0 = Ga04da0.map\nDiagonalTo4_A1 = Ga04da1.map\nDiagonalTo4_A2 = Ga04da2.map\nDiagonalTo4_A3 = Ga04da3.map\nCapTo4_A0 = Ga04ca0.map\nCapTo4_A1 = Ga04ca1.map\nCapTo4_A2 = Ga04ca2.map\nCapTo4_A3 = Ga04ca3.map\n\n[TextureType1]\nFlatColor= 131\nSolidA0 = Ga11Sa0.map\nSolidA1 = Ga11sa1.map\nSolidA2 = Ga11sa2.map\nSolidA3 = Ga11sa3.map\nSolidB0 = Ga11Sb0.map\nSolidB1 = Ga11sb1.map\nSolidB2 = Ga11sb2.map\nSolidB3 = Ga11sb3.map\nDiagonalTo2_A0 = Ga12da0.map\nDiagonalTo2_A1 = Ga12da1.map\nDiagonalTo2_A2 = Ga12da2.map\nDiagonalTo2_A3 = Ga12da3.map\nCapTo2_A0 = Ga12ca0.map\nCapTo2_A1 = Ga12ca1.map\nCapTo2_A2 = Ga12ca2.map\nCapTo2_A3 = Ga12ca3.map\nDiagonalTo4_A0 = Ga14da0.map\nDiagonalTo4_A1 = Ga14da1.map\nDiagonalTo4_A2 = Ga14da2.map\nDiagonalTo4_A3 = Ga14da3.map\nCapTo4_A0 = Ga14ca0.map\nCapTo4_A1 = Ga14ca1.map\nCapTo4_A2 = Ga14ca2.map\nCapTo4_A3 = Ga14ca3.map\n\n[TextureType2]\nFlatColor= 131\nSolidA0 = Ga22Sa0.map\nSolidA1 = Ga22sa1.map\nSolidA2 = Ga22sa2.map\nSolidA3 = Ga22sa3.map\nSolidB0 = Ga22Sb0.map\nSolidB1 = Ga22sb1.map\nSolidB2 = Ga22sb2.map\nSolidB3 = Ga22sb3.map\nSolidC0 = Ga22Sc0.map\nSolidC1 = Ga22sc1.map\nSolidC2 = Ga22sc2.map\nSolidC3 = Ga22sc3.map\nDiagonalTo4_A0 = Ga24da0.map\nDiagonalTo4_A1 = Ga24da1.map\nDiagonalTo4_A2 = Ga24da2.map\nDiagonalTo4_A3 = Ga24da3.map\nCapTo4_A0 = Ga24ca0.map\nCapTo4_A1 = Ga24ca1.map\nCapTo4_A2 = Ga24ca2.map\nCapTo4_A3 = Ga24ca3.map\n\n[TextureType3]\nFlatColor= 201\nSolidA0 = Ga33Sa0.map\nSolidA1 = Ga33sa1.map\nSolidA2 = Ga33sa2.map\nSolidA3 = Ga33sa3.map\nSolidb0 = Ga33Sb0.map\nSolidb1 = Ga33sb1.map\nSolidb2 = Ga33sb2.map\nSolidb3 = Ga33sb3.map\n\n[TextureType4]\nFlatColor= 201\nSolidA0 = Ga44sa0.map\nSolidA1 = Ga44sa1.map\nSolidA2 = Ga44sa2.map\nSolidA3 = Ga44sa3.map\nSolidb0 = Ga44sb0.map\nSolidb1 = Ga44sb1.map\nSolidb2 = Ga44sb2.map\nSolidb3 = Ga44sb3.map"""
+            },
+            "Achilles": {
+                "NormalView": "[NormalView]\nTime=900\nFogStart= 150\nFogEnd= 250\nFogBreak=60\nVisibilityRange=250\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=1\nTerrainShadowLuma=20\nCarAmbient=20",
+                "Static": """[Atlases]\nMaterialName = ac_detail_atlas\n\n[Sky]\nSunTexture= sun.0\nSkyType= 0\nSkyHeight = 210\nSkyTexture= achilles.map\nBackdropTexture =\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Clouds]\nCount = 8\nType = 0\nTileSize = 1000\nTexture0 = acloud2.map\nSize0 = 500\nHeight0 = 200\nTexture1 = acloud.map\nSize1 = 500\nHeight1 = 190\nTexture2 = acloud2.map\nSize2 = 500\nHeight2 = 180\n\n[Color]\nPalette=ACHILLES.ACT\nLuma=ACHILLES.LUM\nTranslucency=ACHILLES.TBL\nAlpha=ACHILLES.ALB\n\n[TextureType0]\nFlatColor= 128\nSolidA0 = ac00sA0.map\nSolidA1 = ac00sA1.map\nSolidA2 = ac00sA2.map\nSolidA3 = ac00sA3.map\nSolidB0 = ac00sA0.map\nSolidB1 = ac00sA1.map\nSolidB2 = ac00sA2.map\nSolidB3 = ac00sA3.map\nSolidC0 = ac00sA0.map\nSolidC1 = ac00sA1.map\nSolidC2 = ac00sA2.map\nSolidC3 = ac00sA3.map\nSolidD0 = ac00sB0.map\nSolidD1 = ac00sB1.map\nSolidD2 = ac00sB2.map\nSolidD3 = ac00sB3.map\nCapTo1_A0 = ac01cA0.map\nCapTo1_A1 = ac01cA1.map\nCapTo1_A2 = ac01cA2.map\nCapTo1_A3 = ac01cA3.map\nDiagonalTo1_A0 = ac01dA0.map\nDiagonalTo1_A1 = ac01dA1.map\nDiagonalTo1_A2 = ac01dA2.map\nDiagonalTo1_A3 = ac01dA3.map\nCapTo5_A0 = ac05cA0.map\nCapTo5_A1 = ac05cA1.map\nCapTo5_A2 = ac05cA2.map\nCapTo5_A3 = ac05cA3.map\nCapTo5_B0 = ac05cB0.map\nCapTo5_B1 = ac05cB1.map\nCapTo5_B2 = ac05cB2.map\nCapTo5_B3 = ac05cB3.map\nCapTo5_C0 = ac05cC0.map\nCapTo5_C1 = ac05cC1.map\nCapTo5_C2 = ac05cC2.map\nCapTo5_C3 = ac05cC3.map\nDiagonalTo5_A0 = ac05dA0.map\nDiagonalTo5_A1 = ac05dA1.map\nDiagonalTo5_A2 = ac05dA2.map\nDiagonalTo5_A3 = ac05dA3.map\n\n[TextureType1]\nFlatColor= 192\nSolidA0 = ac11sa0.map\nSolidA1 = ac11sa1.map\nSolidA2 = ac11sa2.map\nSolidA3 = ac11sa3.map\nCapTo2_A0 = ac12ca0.map\nCapTo2_A1 = ac12ca1.map\nCapTo2_A2 = ac12ca2.map\nCapTo2_A3 = ac12ca3.map\nDiagonalTo2_A0 = ac12da0.map\nDiagonalTo2_A1 = ac12da1.map\nDiagonalTo2_A2 = ac12da2.map\nDiagonalTo2_A3 = ac12da3.map\n\n[TextureType2]\nFlatColor= 112\nSolidA0 = ac22sa0.map\nSolidA1 = ac22sa1.map\nSolidA2 = ac22sa2.map\nSolidA3 = ac22sa3.map\n\n[TextureType3]\nFlatColor= 122\nSolidA0 = ac00sc0.map\nSolidA1 = ac00sc1.map\nSolidA2 = ac00sc2.map\nSolidA3 = ac00sc3.map\nSolidB0 = ac00sD0.map\nSolidB1 = ac00sD1.map\nSolidB2 = ac00sD2.map\nSolidB3 = ac00sD3.map\nSolidC0 = ac00se0.map\nSolidC1 = ac00se1.map\nSolidC2 = ac00se2.map\nSolidC3 = ac00se3.map\nSolidD0 = ac00sg0.map\nSolidD1 = ac00sg1.map\nSolidD2 = ac00sg2.map\nSolidD3 = ac00sg3.map\n\n[TextureType4]\nFlatColor= 86\nSolidA0 = ac00sf0.map\nSolidA1 = ac00sf1.map\nSolidA2 = ac00sf2.map\nSolidA3 = ac00sf3.map\n\n[TextureType5]\nFlatColor= 103\nSolidA0 = ac55sa0.map\nSolidA1 = ac55sa1.map\nSolidA2 = ac55sa2.map\nSolidA3 = ac55sa3.map\nSolidB0 = ac55sB0.map\nSolidB1 = ac55sB1.map\nSolidB2 = ac55sB2.map\nSolidB3 = ac55sB3.map"""
+            },
+            "Elysium": {
+                "NormalView": "[NormalView]\nTime=900\nFogStart= 80\nFogEnd= 250\nFogBreak=40\nVisibilityRange=250\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0\nFogDirection=1\nTerrainShadowLuma=20\nCarAmbient=20",
+                "Static": """[Atlases]\nMaterialName = el_detail_atlas\n\n[Sky]\nSunTexture= sun.0\nSkyType= 0\nSkyHeight = 210\nSkyTexture=elysium.map \nBackdropTexture =\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Clouds]\nCount = 8\nType = 0\nTileSize = 1000\nTexture0 = acloud2.map\nSize0 = 500\nHeight0 = 100\nTexture1 = acloud.map\nSize1 = 500\nHeight1 = 90\nTexture2 = acloud2.map\nSize2 = 500\nHeight2 = 80\n\n[Color]\nPalette=elysium.act\nLuma=elysium.lum\nTranslucency=elysium.tbl\nAlpha=elysium.alb\n\n[TextureType0]\nFlatColor= 201\nSolidA0 = el00sa0.map\nSolidA1 = el00sa1.map\nSolidA2 = el00sa2.map\nSolidA3 = el00sa3.map\nSolidB0 = el00sb0.map\nSolidB1 = el00sb1.map\nSolidB2 = el00sb2.map\nSolidB3 = el00sb3.map\nSolidC0 = el00sc0.map\nSolidC1 = el00sc1.map\nSolidC2 = el00sc2.map\nSolidC3 = el00sc3.map\nDiagonalTo1_A0 = el01da0.map\nDiagonalTo1_A1 = el01da1.map\nDiagonalTo1_A2 = el01da2.map\nDiagonalTo1_A3 = el01da3.map\nCapTo1_A0 = el01ca0.map\nCapTo1_A1 = el01ca1.map\nCapTo1_A2 = el01ca2.map\nCapTo1_A3 = el01ca3.map\nDiagonalTo2_A0 = el02da0.map\nDiagonalTo2_A1 = el02da1.map\nDiagonalTo2_A2 = el02da2.map\nDiagonalTo2_A3 = el02da3.map\nCapTo2_A0 = el02ca0.map\nCapTo2_A1 = el02ca1.map\nCapTo2_A2 = el02ca2.map\nCapTo2_A3 = el02ca3.map\nDiagonalTo4_A0 = el04da0.map\nDiagonalTo4_A1 = el04da1.map\nDiagonalTo4_A2 = el04da2.map\nDiagonalTo4_A3 = el04da3.map\nCapTo4_A0 = el04ca0.map\nCapTo4_A1 = el04ca1.map\nCapTo4_A2 = el04ca2.map\nCapTo4_A3 = el04ca3.map\n\n[TextureType1]\nFlatColor= 131\nSolidA0 = el11Sa0.map\nSolidA1 = el11sa1.map\nSolidA2 = el11sa2.map\nSolidA3 = el11sa3.map\nSolidB0 = el11Sb0.map\nSolidB1 = el11sb1.map\nSolidB2 = el11sb2.map\nSolidB3 = el11sb3.map\nSolidC0 = el11Sc0.map\nSolidC1 = el11sc1.map\nSolidC2 = el11sc2.map\nSolidC3 = el11sc3.map\nDiagonalTo2_A0 = el12da0.map\nDiagonalTo2_A1 = el12da1.map\nDiagonalTo2_A2 = el12da2.map\nDiagonalTo2_A3 = el12da3.map\nCapTo2_A0 = el12ca0.map\nCapTo2_A1 = el12ca1.map\nCapTo2_A2 = el12ca2.map\nCapTo2_A3 = el12ca3.map\n\n[TextureType2]\nFlatColor= 131\nSolidA0 = el22Sa0.map\nSolidA1 = el22sa1.map\nSolidA2 = el22sa2.map\nSolidA3 = el22sa3.map\nSolidB0 = el22Sb0.map\nSolidB1 = el22sb1.map\nSolidB2 = el22sb2.map\nSolidB3 = el22sb3.map\nSolidC0 = el22Sc0.map\nSolidC1 = el22sc1.map\nSolidC2 = el22sc2.map\nSolidC3 = el22sc3.map\n\n[TextureType3]\nFlatColor= 201\nSolidA0 = el33Sa0.map\nSolidA1 = el33sa1.map\nSolidA2 = el33sa2.map\nSolidA3 = el33sa3.map\n\n[TextureType4]\nFlatColor= 201\nSolidA0 = el04sa0.map\nSolidA1 = el04sa1.map\nSolidA2 = el04sa2.map\nSolidA3 = el04sa3.map\nSolidb0 = el04sb0.map\nSolidb1 = el04sb1.map\nSolidb2 = el04sb2.map\nSolidb3 = el04sb3.map"""
+            },
+            "Titan": {
+                "NormalView": "[NormalView]\nTime=1100\nFogStart=100\nFogEnd=250\nFogBreak=60\nVisibilityRange=250\nIntensity=40\nAmbient=0\nFlatRange=250\nShadowLuma=0",
+                "Static": """[Atlases]\nMaterialName = ti_detail_atlas\n\n[Sky]\nSunTexture= sun.0\nSkyType= 0\nSkyHeight = 150\nSkyTexture= titan.map\nBackdropDistance= 400\nBackdropWidth = 800\nBackdropHeight = 100\n\n[Clouds]\nCount = 6\nType = 1\nTileSize = 1000\nTexture0 = acloud2.map\nSize0 = 500\nHeight0 = 140\nTexture1 = acloud2.map\nSize1 = 500\nHeight1 = 130\nTexture2 = acloud2.map\nSize2 = 500\nHeight2 = 120\n\n[Stars]\nRadius = 300\nTexture00 = saturn.map\nSize00 = 200\nAzimuth00 = 180\nElevation00 = 15\nRoll00 = 0\n\n[StarList]\nSolid = 0\nLayerHeight = 15\nTexture = stars.map\nRadius = 1000\nStart0 = 235\nEnd0 = 510\nSize0 = 350\nCount0 = 12\nStart1 = 235\nEnd1 = 510\nSize1 = 350\nCount1 = 9 \nStart2 = 0\nEnd2 = 360\nSize2 = 350\nCount2 = 11\n\n[Color]\nPalette=TITAN.ACT\nLuma=TITAN.LUM\nTranslucency=TITAN.TBL\nAlpha=TITAN.ALB\n\n[TextureType0]\nSolidA0 =ti00sa0.MAP\nSolidA1 =ti00sa1.MAP\nSolidA2 =ti00sa2.MAP\nSolidA3 =ti00sa3.MAP\nCapTo3_A0 =ti03ca0.map\nCapTo3_A1 =ti03ca1.map\nCapTo3_A2 =ti03ca2.map\nCapTo3_A3 =ti03ca3.map\nDiagonalTo3_A0 =ti03dA0.map\nDiagonalTo3_A1 =ti03dA1.map\nDiagonalTo3_A2 =ti03dA2.map\nDiagonalTo3_A3 =ti03dA3.map\n\n[TextureType3]\nSolidA0 =ti33sA0.map\nSolidA1 =ti33sA1.map\nSolidA2 =ti33sA2.map\nSolidA3 =ti33sA3.map"""
+            }
+        }
+        
+        return templates.get(world, {"NormalView": nv_default, "Static": ""})
+
+    def log(self, message, tag="info"):
+        timestamp = datetime.now().strftime("[%H:%M:%S] ")
+        self.root.after(0, lambda: self._log_impl(timestamp, message, tag))
+
+    def _log_impl(self, timestamp, message, tag):
+        self.log_box.config(state="normal")
+        self.log_box.insert("end", timestamp, "timestamp")
+        self.log_box.insert("end", message + "\n", tag)
+        self.log_box.see("end")
+        self.log_box.config(state="disabled")
 
     def browse_output(self):
         d = filedialog.askdirectory()
@@ -548,6 +931,8 @@ class BZ98TRNArchitect:
         ttk.Entry(sky_cfg_frame, textvariable=self.sky_prefix_var, width=8).pack(side="left", padx=5)
         ttk.Label(sky_cfg_frame, text="Res:").pack(side="left", padx=(10, 0))
         ttk.OptionMenu(sky_cfg_frame, self.sky_out_res, self.sky_out_res.get(), 512, 1024, 2048).pack(side="left")
+        
+        self.create_fine_tune_slider(left_panel, "Rotation Offset (Deg):", self.sky_rotation, 0, 360, 5, "Rotate the skybox horizontally.", command=self.process_skybox)
 
         # Skybox Export Toggles (Restored)
         sky_exp_opts = ttk.Frame(left_panel)
@@ -715,22 +1100,53 @@ class BZ98TRNArchitect:
         path = filedialog.askopenfilename(filetypes=ftypes)
         if path:
             self.sky_input_path.set(path)
-            # Trigger the preview immediately after setting the path
+            self.load_skybox_preview(path)
             self.process_skybox()
 
+    def load_skybox_preview(self, path):
+        try:
+            img = Image.open(path).convert("RGB")
+            w, h = img.size
+            ratio = w / h
+            
+            self.sky_mirror_mode = False
+            
+            # Aspect Ratio Logic
+            if abs(ratio - 4.0) < 0.1:
+                self.sky_mirror_mode = True
+                new_h = h * 2
+                new_img = Image.new("RGB", (w, new_h))
+                new_img.paste(img, (0, 0))
+                mirrored = ImageOps.flip(img)
+                new_img.paste(mirrored, (0, h))
+                img = new_img
+                self.log("Notice: 4:1 Sky detected. Mirrored to 2:1.", "warning")
+            elif abs(ratio - 2.0) > 0.1:
+                messagebox.showwarning("Projection Warning", f"Image aspect ratio is {ratio:.2f}:1.\nEquirectangular projection requires 2:1.\nResults may be distorted.")
+
+            # Create optimized preview buffer (max width 1024)
+            preview_w = min(1024, img.width)
+            preview_h = int(preview_w / 2)
+            
+            preview_img = img.resize((preview_w, preview_h), self.resample_method)
+            self.preview_sky_data = np.array(preview_img).astype(np.float32)
+            
+        except Exception as e:
+            self.log(f"Failed to load skybox: {e}", "error")
+            self.preview_sky_data = None
+
     def process_skybox(self):
-        """Generates a 256px 4x3 cross preview instantly."""
-        path = self.sky_input_path.get()
-        if not path or not os.path.exists(path):
-            return
+        if not hasattr(self, 'preview_sky_data') or self.preview_sky_data is None:
+            path = self.sky_input_path.get()
+            if path and os.path.exists(path): self.load_skybox_preview(path)
+            else: return
 
         try:
-            # 1. Load and prepare image data
-            img_data = np.array(Image.open(path).convert("RGB"))
-            img_float = img_data.astype(np.float32)
+            # Use cached numpy array directly
+            img_float = self.preview_sky_data
             
             # 2. Settings
-            self.rotation_rad = np.pi # Default 180 deg orientation
+            self.rotation_rad = np.radians(self.sky_rotation.get()) + np.pi
             preview_res = 256 # Low res for speed
             
             face_map = {0: 'pz', 1: 'nz', 2: 'px', 3: 'nx', 4: 'py', 5: 'ny'}
@@ -747,7 +1163,7 @@ class BZ98TRNArchitect:
             self.update_skybox_preview(self.generated_faces)
             
         except Exception as e:
-            messagebox.showerror("Preview Error", f"Could not generate preview: {str(e)}")
+            print(f"Preview Error: {e}")
 
     def export_skybox(self):
         path = self.sky_input_path.get()
@@ -764,7 +1180,8 @@ class BZ98TRNArchitect:
             "res": self.sky_out_res.get(),
             "prefix": self.sky_prefix_var.get().lower().strip(),
             "exp_mat": self.export_mat.get(),
-            "exp_trn": self.export_trn.get()
+            "exp_trn": self.export_trn.get(),
+            "mirror": getattr(self, 'sky_mirror_mode', False)
         }
         self.btn_skybox.config(text="GENERATING CUBEMAP...", state="disabled")
         threading.Thread(target=self._export_skybox_worker, args=(cfg,), daemon=True).start()
@@ -773,7 +1190,18 @@ class BZ98TRNArchitect:
         """High-quality export with sorted TRN entries and uppercase material names."""
         try:
             # Load original for high-res processing
-            img_data = np.array(Image.open(cfg["path"]).convert("RGB")).astype(np.float32)
+            img = Image.open(cfg["path"]).convert("RGB")
+            
+            if cfg.get("mirror", False):
+                w, h = img.size
+                new_h = h * 2
+                new_img = Image.new("RGB", (w, new_h))
+                new_img.paste(img, (0, 0))
+                mirrored = ImageOps.flip(img)
+                new_img.paste(mirrored, (0, h))
+                img = new_img
+            
+            img_data = np.array(img).astype(np.float32)
             res = cfg["res"]
             
             # Use the user-defined prefix (enforce lowercase for filenames)
@@ -837,9 +1265,9 @@ class BZ98TRNArchitect:
                         f.write(f"Elevation{idx} = {elev}\n")
                         f.write(f"Roll{idx}      = {roll}\n\n")
 
-            self.root.after(0, lambda: messagebox.showinfo("Success", "Export Complete: TRN entries sorted 01-06."))
+            self.log("Success: Export Complete. TRN entries sorted 01-06.", "success")
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Export Error", str(e)))
+            self.log(f"Export Error: {str(e)}", "error")
         finally:
             self.root.after(0, lambda: self.btn_skybox.config(text="🚀 EXPORT SKYBOX", state="normal"))
 
@@ -925,6 +1353,17 @@ class BZ98TRNArchitect:
         if not self.style_var.get() in all_styles:
             self.style_var.set("Square/Blocky")
         self.update_preview()
+        
+    def apply_style_preset(self, event=None):
+        name = self.selected_style_preset.get()
+        if name in self.style_presets and name != "Custom":
+            p = self.style_presets[name]
+            self.style_var.set(p["style"])
+            self.depth_var.set(p["depth"])
+            self.teeth_count.set(p["teeth"])
+            self.jitter_var.set(p["jitter"])
+            self.blend_softness.set(p["soft"])
+            self.update_preview()
 
     def zoom_wheel(self, event):
         if event.num == 4 or event.delta > 0: self.zoom_level *= 1.1
@@ -1295,9 +1734,9 @@ class BZ98TRNArchitect:
                             f.write(f"CapTo{target}_A0 = {c_n}\n")
                             f.write(f"DiagonalTo{target}_A0 = {d_n}\n")
                             
-            self.root.after(0, lambda: messagebox.showinfo("Export Done", f"World bundle generated for {prfx_upper}!\nGrid size: {gs}x{gs}"))
+            self.log(f"Export Done: World bundle generated for {prfx_upper}! (Grid: {gs}x{gs})", "success")
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", str(e)))
+            self.log(f"Error: {str(e)}", "error")
         finally:
             self.root.after(0, lambda: self.btn_generate.config(text="2. BUILD ATLAS", state="normal"))
 
