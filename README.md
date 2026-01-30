@@ -3,7 +3,7 @@ A powerful world building tool that auto creates custom atlases, material files,
 
 <img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/34362a26-e3cd-41b5-a43a-15c8829e393b" />
 
-<img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/2b7f0421-71d3-4248-8871-9010d8465fca" />
+<img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/e6b60dd4-a375-44b7-a88d-613c4a93b526" />
 
 <img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/44e371ee-f48c-476c-8bc4-6e393208fe20" />
 
