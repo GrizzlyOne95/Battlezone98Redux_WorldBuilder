@@ -24,6 +24,63 @@ BZ_CYAN = "#00ffff"
 
 CONFIG_FILE = "world_builder_config.json"
 
+class BZMapFormat:
+    INDEXED, ARGB4444, RGB565, ARGB8888, XRGB8888 = 0, 1, 2, 3, 4
+    bpp = [1, 2, 2, 4, 4]
+
+# Full 256-color Moon.act data
+BUILTIN_MOON_PALETTE = [
+    (0, 0, 0), (17, 16, 16), (26, 24, 24), (31, 26, 25), (36, 35, 31), (50, 42, 36),
+    (52, 49, 48), (60, 56, 56), (68, 64, 64), (77, 72, 72), (85, 80, 80), (84, 79, 76),
+    (112, 108, 104), (116, 129, 125), (133, 138, 133), (178, 174, 174), (191, 188, 188),
+    (204, 201, 201), (217, 215, 215), (229, 228, 228), (255, 255, 255), (20, 3, 2),
+    (40, 6, 3), (59, 10, 5), (79, 13, 6), (99, 16, 8), (107, 0, 8), (148, 8, 0),
+    (140, 33, 8), (148, 16, 0), (156, 24, 0), (173, 57, 0), (189, 82, 8), (206, 99, 16),
+    (200, 94, 11), (214, 101, 0), (214, 132, 33), (222, 123, 24), (231, 140, 33),
+    (231, 156, 41), (239, 173, 57), (222, 156, 49), (222, 165, 57), (222, 165, 74),
+    (231, 173, 99), (239, 189, 90), (247, 198, 82), (239, 206, 115), (249, 249, 149),
+    (235, 230, 97), (183, 180, 81), (169, 133, 50), (131, 124, 45), (123, 99, 39),
+    (149, 101, 17), (87, 59, 2), (80, 67, 28), (78, 48, 3), (53, 40, 12), (36, 24, 5),
+    (171, 72, 69), (169, 168, 158), (153, 150, 139), (249, 249, 195), (223, 216, 188),
+    (200, 189, 151), (194, 186, 139), (186, 172, 145), (167, 164, 145), (160, 151, 127),
+    (175, 168, 134), (160, 145, 106), (157, 145, 109), (136, 130, 107), (132, 125, 80),
+    (116, 104, 81), (96, 94, 83), (84, 73, 55), (115, 72, 1), (106, 81, 30),
+    (109, 118, 109), (93, 106, 102), (79, 96, 90), (68, 91, 86), (63, 76, 73),
+    (62, 63, 57), (48, 70, 67), (46, 61, 56), (37, 59, 54), (34, 50, 45), (31, 42, 41),
+    (24, 36, 32), (19, 23, 21), (16, 14, 14), (15, 10, 6), (7, 11, 9), (181, 191, 204),
+    (150, 156, 172), (139, 149, 164), (134, 143, 156), (125, 134, 150), (120, 130, 143),
+    (115, 124, 139), (112, 129, 150), (111, 120, 135), (107, 116, 131), (106, 124, 145),
+    (101, 117, 141), (100, 111, 128), (100, 108, 123), (96, 108, 123), (96, 104, 120),
+    (95, 112, 135), (92, 104, 119), (92, 100, 116), (91, 108, 131), (88, 100, 115),
+    (88, 96, 112), (85, 104, 127), (84, 96, 111), (84, 92, 108), (83, 100, 123),
+    (80, 96, 119), (80, 92, 108), (80, 88, 104), (76, 96, 119), (76, 92, 116),
+    (76, 92, 110), (76, 84, 100), (75, 88, 103), (74, 88, 108), (72, 92, 115),
+    (72, 88, 112), (72, 84, 104), (72, 84, 99), (72, 80, 95), (68, 88, 112),
+    (68, 84, 108), (68, 80, 100), (68, 76, 92), (67, 84, 102), (67, 80, 95),
+    (64, 84, 108), (64, 80, 104), (64, 76, 96), (64, 72, 87), (63, 80, 100),
+    (63, 76, 91), (60, 80, 104), (60, 76, 104), (60, 76, 100), (60, 72, 92),
+    (60, 68, 83), (59, 76, 96), (59, 72, 87), (56, 76, 100), (56, 72, 100),
+    (56, 72, 96), (56, 64, 79), (55, 72, 92), (55, 68, 83), (53, 68, 88),
+    (52, 72, 96), (52, 68, 96), (52, 68, 92), (52, 64, 88), (52, 60, 75),
+    (51, 64, 79), (49, 64, 84), (48, 68, 92), (48, 64, 92), (48, 60, 84),
+    (47, 64, 88), (47, 60, 75), (47, 56, 72), (46, 56, 68), (45, 60, 88),
+    (45, 60, 80), (44, 56, 79), (44, 52, 68), (44, 51, 64), (43, 60, 84),
+    (40, 56, 80), (40, 56, 76), (40, 52, 76), (40, 48, 64), (40, 48, 60),
+    (40, 44, 60), (36, 52, 72), (36, 51, 76), (36, 48, 72), (36, 40, 56),
+    (35, 44, 60), (33, 41, 56), (31, 38, 53), (28, 36, 49), (26, 33, 45),
+    (24, 30, 41), (22, 27, 38), (20, 24, 34), (17, 22, 30), (15, 19, 26),
+    (13, 16, 23), (11, 13, 19), (9, 10, 15), (6, 8, 11), (4, 5, 8), (2, 2, 4),
+    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
+    (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0), (0, 0, 0),
+    (0, 0, 0), (0, 0, 0), (0, 255, 255), (0, 127, 127), (0, 63, 63),
+    (78, 194, 242), (14, 153, 240), (7, 109, 222), (12, 149, 203), (6, 102, 171),
+    (6, 93, 136), (3, 56, 124), (26, 35, 80), (0, 127, 255), (0, 99, 199),
+    (0, 70, 141), (0, 34, 69), (0, 21, 42), (0, 255, 0), (0, 127, 0), (0, 63, 0),
+    (0, 31, 0), (0, 15, 0), (255, 0, 0), (127, 0, 0), (63, 0, 0), (31, 0, 0),
+    (15, 0, 0), (255, 255, 0), (164, 164, 0), (127, 127, 0), (80, 80, 0),
+    (64, 64, 0), (255, 0, 255)
+]
+
 class ToolTip:
     def __init__(self, widget, text):
         self.widget = widget
@@ -110,6 +167,12 @@ class BZ98TRNArchitect:
         self.hg2_brightness = tk.DoubleVar(value=1.0)
         self.hg2_contrast = tk.DoubleVar(value=1.0)
         self.hg2_smooth_val = tk.IntVar(value=0)
+        
+        # Legacy Atlas Variables
+        self.legacy_source_dir = tk.StringVar()
+        self.legacy_out_dir = tk.StringVar()
+        self.legacy_pal_path = tk.StringVar()
+        self.legacy_prefix = tk.StringVar(value="legacy")
 
         # Export Toggles
         self.exp_png = tk.BooleanVar(value=self.config.get("exp_png", False))
@@ -143,9 +206,9 @@ class BZ98TRNArchitect:
         self.stock_time = tk.IntVar(value=1100)
         
         # Lighting (RGB)
-        self.light_diffuse = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
-        self.light_ambient = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
-        self.light_specular = (tk.IntVar(value=255), tk.IntVar(value=255), tk.IntVar(value=255))
+        self.light_diffuse = (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0))
+        self.light_ambient = (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0))
+        self.light_specular = (tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0), tk.DoubleVar(value=1.0))
         
         # Audio
         self.audio_track = tk.IntVar(value=27)
@@ -500,6 +563,11 @@ class BZ98TRNArchitect:
         self.tab_trn = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_trn, text=" Custom Atlas Creator ")
 
+        # TAB 2.5: Legacy Atlas Creator
+        self.tab_legacy = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_legacy, text=" Legacy Atlas Creator ")
+        self.setup_legacy_tab()
+
         # TAB 3: HG2 Management
         self.tab_hg2 = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_hg2, text=" HG2 Management ")
@@ -702,8 +770,8 @@ class BZ98TRNArchitect:
                 c_hex = colors[col]
                 l = ttk.Label(sub, text=col, foreground=c_hex)
                 l.pack(side="left", padx=(5, 0))
-                s = tk.Scale(sub, variable=var, from_=0, to=255, orient="horizontal", showvalue=0,
-                             bg=BZ_BG, troughcolor="#1a1a1a", activebackground=c_hex, highlightthickness=0)
+                s = tk.Scale(sub, variable=var, from_=0.0, to=3.0, resolution=0.05, orient="horizontal", showvalue=1,
+                             bg=BZ_BG, fg=BZ_FG, troughcolor="#1a1a1a", activebackground=c_hex, highlightthickness=0)
                 s.pack(side="left", fill="x", expand=True)
 
         create_rgb_slider(right_col, "Sun / Diffuse Color", self.light_diffuse)
@@ -716,10 +784,234 @@ class BZ98TRNArchitect:
         self.btn_stock_gen = ttk.Button(right_col, text="GENERATE MAP FILES", command=self.generate_stock_map, style="Success.TButton")
         self.btn_stock_gen.pack(fill="x", pady=10)
 
+    def setup_legacy_tab(self):
+        container = ttk.Frame(self.tab_legacy, padding=20)
+        container.pack(fill="both", expand=True)
+        
+        ttk.Label(container, text="LEGACY ATLAS CONVERTER (BZ 1.5 -> REDUX)", font=(self.custom_font_name, 14, "bold"), foreground=BZ_GREEN).pack(anchor="w", pady=(0, 10))
+        
+        # Source
+        src_f = ttk.LabelFrame(container, text=" Source Directory ", padding=10)
+        src_f.pack(fill="x", pady=5)
+        
+        src_inner = ttk.Frame(src_f)
+        src_inner.pack(fill="x")
+        
+        src_ent = ttk.Entry(src_inner, textvariable=self.legacy_source_dir)
+        src_ent.pack(side="left", fill="x", expand=True, padx=5)
+        ToolTip(src_ent, "Folder of .MAP terrain texture tiles")
+        ttk.Button(src_inner, text="Browse", command=self.browse_legacy_source).pack(side="left")
+        
+        self.legacy_trn_info = tk.StringVar()
+        ttk.Label(src_f, textvariable=self.legacy_trn_info, foreground=BZ_CYAN, font=("Consolas", 9)).pack(anchor="w", padx=5, pady=(5,0))
+        
+        # Output
+        out_f = ttk.LabelFrame(container, text=" Output Directory ", padding=10)
+        out_f.pack(fill="x", pady=5)
+        out_ent = ttk.Entry(out_f, textvariable=self.legacy_out_dir)
+        out_ent.pack(side="left", fill="x", expand=True, padx=5)
+        ToolTip(out_ent, "Where redux files will be placed")
+        ttk.Button(out_f, text="Browse", command=lambda: self.legacy_out_dir.set(filedialog.askdirectory())).pack(side="left")
+        
+        # Settings
+        set_f = ttk.LabelFrame(container, text=" Conversion Settings ", padding=10)
+        set_f.pack(fill="x", pady=5)
+        
+        ttk.Label(set_f, text="Output Prefix:").pack(side="left", padx=5)
+        ttk.Entry(set_f, textvariable=self.legacy_prefix, width=15).pack(side="left", padx=5)
+        
+        # Format Selection
+        ttk.Label(set_f, text="Format:").pack(side="left", padx=(10, 5))
+        self.legacy_format = tk.StringVar(value=".dds")
+        ttk.Combobox(set_f, textvariable=self.legacy_format, values=[".dds", ".png"], state="readonly", width=8).pack(side="left")
+
+        ttk.Label(set_f, text="Palette (Optional):").pack(side="left", padx=(20, 5))
+        pal_ent = ttk.Entry(set_f, textvariable=self.legacy_pal_path)
+        pal_ent.pack(side="left", fill="x", expand=True, padx=5)
+        ToolTip(pal_ent, "If the ported world has a custom .ACT palette file, select it here.")
+        ttk.Button(set_f, text="Load .ACT", command=lambda: self.legacy_pal_path.set(filedialog.askopenfilename(filetypes=[("ACT Palette", "*.act")]))).pack(side="left")
+
+        self.btn_legacy_gen = ttk.Button(container, text="CONVERT & BUILD ATLAS", command=self.generate_legacy_atlas, style="Success.TButton")
+        self.btn_legacy_gen.pack(fill="x", pady=20)
+        
+        ttk.Label(container, text="* Scans for files ending in '0.map' or '0.bmp' (e.g. ca00sa0.bmp)\n* Automatically arranges tiles into an efficient grid.\n* Generates .material, .csv, and atlas image.", foreground="#888888").pack(anchor="w")
+
+    def browse_legacy_source(self):
+        path = filedialog.askdirectory()
+        if path:
+            self.legacy_source_dir.set(path)
+            self.scan_legacy_folder(path)
+
+    def scan_legacy_folder(self, path):
+        self.legacy_trn_info.set("")
+        try:
+            trn_files = [f for f in os.listdir(path) if f.lower().endswith('.trn')]
+            if trn_files:
+                trn_file = trn_files[0]
+                full_trn = os.path.join(path, trn_file)
+                with open(full_trn, 'r', errors='ignore') as f:
+                    content = f.read()
+                
+                match = re.search(r'Palette\s*=\s*([^\s\n\r]+)', content, re.IGNORECASE)
+                if match:
+                    pal_name = match.group(1)
+                    self.legacy_trn_info.set(f"Detected TRN: {trn_file} | Palette: {pal_name}")
+                    
+                    local_pal = os.path.join(path, pal_name)
+                    if os.path.exists(local_pal):
+                        self.legacy_pal_path.set(local_pal)
+                        self.log(f"Auto-selected palette: {local_pal}", "success")
+                else:
+                    self.legacy_trn_info.set(f"Detected TRN: {trn_file} (No Palette defined)")
+        except Exception as e:
+            self.log(f"Error scanning source: {e}", "error")
+
+    def generate_legacy_atlas(self):
+        src = self.legacy_source_dir.get()
+        out = self.legacy_out_dir.get()
+        if not src or not out:
+            messagebox.showerror("Error", "Please select source and output directories.")
+            return
+            
+        self.btn_legacy_gen.config(text="PROCESSING...", state="disabled")
+        threading.Thread(target=self._generate_legacy_worker, args=(src, out), daemon=True).start()
+
+    def _generate_legacy_worker(self, src, out):
+        try:
+            # 1. Find Files
+            files = [f for f in os.listdir(src) if f.lower().endswith(('0.map', '0.bmp', '0.png'))]
+            if not files:
+                self.log("No matching legacy files found (must end in 0.map, 0.bmp, or 0.png).", "warning")
+                return
+
+            # Load Palette if provided
+            pal = BUILTIN_MOON_PALETTE
+            pal_path = self.legacy_pal_path.get()
+            if pal_path and os.path.exists(pal_path):
+                with open(pal_path, 'rb') as f:
+                    raw = f.read(768)
+                    pal = [list(struct.unpack('<3B', raw[i:i+3])) for i in range(0, 768, 3)]
+
+            images = []
+            names = []
+            
+            # Regex for TRN parsing: Prefix(2), From(1), To(1), Kind(1), Var(1), Mip(1)
+            name_pattern = re.compile(r'^([a-zA-Z]{2})(\d)(\d)([scd])([a-zA-Z])0$', re.IGNORECASE)
+            trn_data = {}
+            
+            for f in files:
+                path = os.path.join(src, f)
+                try:
+                    if f.lower().endswith(".map"):
+                        img = self.read_bz_map(path, pal)
+                    else:
+                        img = Image.open(path).convert("RGBA")
+                    
+                    if img:
+                        images.append(img)
+                        root_name = os.path.splitext(f)[0]
+                        names.append(root_name)
+                        
+                        # TRN Entry Generation
+                        match = name_pattern.match(root_name)
+                        if match:
+                            _, t_from, t_to, kind, var = match.groups()
+                            t_from = int(t_from)
+                            if t_from not in trn_data: trn_data[t_from] = []
+                            
+                            key = ""
+                            k_lower = kind.lower()
+                            v_upper = var.upper()
+                            
+                            if k_lower == 's':
+                                key = f"Solid{v_upper}0"
+                            elif k_lower == 'c':
+                                key = f"CapTo{t_to}_{v_upper}0"
+                            elif k_lower == 'd':
+                                key = f"DiagonalTo{t_to}_{v_upper}0"
+                            
+                            if key:
+                                trn_data[t_from].append(f"{key:<15} = {root_name.upper()}.MAP")
+                except Exception as e:
+                    self.log(f"Failed to load {f}: {e}", "error")
+
+            if not images: return
+
+            # 2. Atlas Packing (Grid)
+            count = len(images)
+            gs = math.ceil(math.sqrt(count))
+            
+            # Assume uniform size based on first image
+            w, h = images[0].size
+            atlas_size = gs * w
+            
+            atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
+            uv_step = 1.0 / gs
+            csv_lines = [f",0,0,{uv_step:.6g},{uv_step:.6g}"]
+            
+            prefix = self.legacy_prefix.get()
+            
+            for idx, (img, name) in enumerate(zip(images, names)):
+                gx, gy = idx % gs, idx // gs
+                px, py = gx * w, gy * h
+                
+                # Resize if mismatch
+                if img.size != (w, h): img = img.resize((w, h))
+                
+                atlas.paste(img, (px, py))
+                
+                # CSV Entry
+                u, v = gx * uv_step, gy * uv_step
+                csv_lines.append(f"{name.upper()}.MAP,{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
+
+            # 3. Save Outputs
+            if not os.path.exists(out): os.makedirs(out)
+            
+            # Save Atlas
+            ext = self.legacy_format.get()
+            atlas.save(os.path.join(out, f"{prefix}_atlas{ext}"))
+            
+            # Save CSV
+            with open(os.path.join(out, f"{prefix}_mapping.csv"), "w") as f:
+                f.write("\n".join(csv_lines))
+                
+            # Save TRN Entries
+            with open(os.path.join(out, "TRN_Entries.txt"), "w") as f:
+                for t_idx in sorted(trn_data.keys()):
+                    f.write(f"[TextureType{t_idx}]\n")
+                    for line in sorted(trn_data[t_idx]):
+                        f.write(f"{line}\n")
+                    f.write("\n")
+            
+            # Save Material File
+            mat_name = f"{prefix}_DETAIL_ATLAS".upper()
+            mat_file = f"{prefix}_detail_atlas.material"
+            atlas_file = f"{prefix}_atlas{ext}"
+            
+            with open(os.path.join(out, mat_file), "w") as f:
+                f.write('import * from "BZTerrainBase.material"\n\n')
+                f.write(f'material {mat_name} : BZTerrainBase\n{{\n')
+                f.write(f'\tset_texture_alias DiffuseMap {atlas_file}\n')
+                f.write(f'\t//set_texture_alias DetailMap {prefix}_detail.dds\n')
+                f.write(f'\tset_texture_alias NormalMap flat_n.dds\n')
+                f.write(f'\tset_texture_alias EmissiveMap black.dds\n\n')
+                f.write(f'\tset $diffuse "1 1 1"\n')
+                f.write(f'\tset $ambient "1 1 1"\n')
+                f.write(f'\tset $specular ".25 .25 .25"\n')
+                f.write(f'\tset $shininess "63"\n')
+                f.write('}\n')
+                
+            self.log(f"Legacy Conversion Complete: {count} tiles packed into {atlas_size}x{atlas_size} atlas.", "success")
+
+        except Exception as e:
+            self.log(f"Legacy Error: {e}", "error")
+        finally:
+            self.root.after(0, lambda: self.btn_legacy_gen.config(text="CONVERT & BUILD ATLAS", state="normal"))
+
     def reset_lighting_defaults(self):
         for group in [self.light_diffuse, self.light_ambient, self.light_specular]:
             for var in group:
-                var.set(255)
+                var.set(1.0)
 
     def validate_map_name(self, P):
         if len(P) > 8: return False
@@ -817,19 +1109,19 @@ class BZ98TRNArchitect:
                 f.write(f"MusicLoopLast={self.audio_loop_last.get()}\n")
                 f.write(f"MusicLoopSkip={self.audio_loop_skip.get()}\n\n")
                 f.write("[Sun_Ambient]\n")
-                f.write(f"Red = {self.light_ambient[0].get()/255.0:.4f}f\n")
-                f.write(f"Green = {self.light_ambient[1].get()/255.0:.4f}f\n")
-                f.write(f"Blue = {self.light_ambient[2].get()/255.0:.4f}f\n\n")
+                f.write(f"Red = {self.light_ambient[0].get():.4f}f\n")
+                f.write(f"Green = {self.light_ambient[1].get():.4f}f\n")
+                f.write(f"Blue = {self.light_ambient[2].get():.4f}f\n\n")
 
                 f.write("[Sun_Diffuse]\n")
-                f.write(f"Red = {self.light_diffuse[0].get()/255.0:.4f}f\n")
-                f.write(f"Green = {self.light_diffuse[1].get()/255.0:.4f}f\n")
-                f.write(f"Blue = {self.light_diffuse[2].get()/255.0:.4f}f\n\n")
+                f.write(f"Red = {self.light_diffuse[0].get():.4f}f\n")
+                f.write(f"Green = {self.light_diffuse[1].get():.4f}f\n")
+                f.write(f"Blue = {self.light_diffuse[2].get():.4f}f\n\n")
 
                 f.write("[Sun_Specular]\n")
-                f.write(f"Red = {self.light_specular[0].get()/255.0:.4f}f\n")
-                f.write(f"Green = {self.light_specular[1].get()/255.0:.4f}f\n")
-                f.write(f"Blue = {self.light_specular[2].get()/255.0:.4f}f\n\n")
+                f.write(f"Red = {self.light_specular[0].get():.4f}f\n")
+                f.write(f"Green = {self.light_specular[1].get():.4f}f\n")
+                f.write(f"Blue = {self.light_specular[2].get():.4f}f\n\n")
 
             self.log(f"Success: Generated {name}.hg2 and {name}.trn in {out_dir}", "success")
             
@@ -1303,6 +1595,27 @@ class BZ98TRNArchitect:
             self.log(f"Export Error: {str(e)}", "error")
         finally:
             self.root.after(0, lambda: self.btn_skybox.config(text="🚀 EXPORT SKYBOX", state="normal"))
+
+    def read_bz_map(self, path, palette=None):
+        with open(path, 'rb') as f:
+            header = f.read(8)
+            if len(header) < 8: return None
+            rb, fmt, h, _ = struct.unpack('<4H', header)
+            if fmt >= len(BZMapFormat.bpp): return None
+            w = rb // BZMapFormat.bpp[fmt]
+            data = f.read()
+            
+            if fmt == BZMapFormat.INDEXED:
+                img = Image.frombytes('L', (w, h), data)
+                if palette:
+                    flat_pal = [v for c in palette for v in c]
+                    img.putpalette(flat_pal)
+                    img = img.convert("RGBA")
+                else:
+                    img = img.convert("RGBA")
+            else:
+                 img = Image.frombytes('RGBA', (w, h), data, 'raw', 'BGRA')
+            return img
 
     def generate_cube_face(self, img, face_idx, res, order=3):
         grid = np.linspace(-1 + (1/res), 1 - (1/res), res)
