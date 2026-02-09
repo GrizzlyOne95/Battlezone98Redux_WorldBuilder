@@ -105,6 +105,358 @@ class ToolTip:
             self.tip_window.destroy()
             self.tip_window = None
 
+
+class AutoPainter:
+    """
+    Handles generation of .mat files from heightmap data using configurable rules.
+    Implements Marching Squares for tile transitions (Solid, Cap, Diagonal).
+    """
+    
+    @staticmethod
+    def calculate_slope_map(heightmap, scale_factor=1.0):
+        """
+        Calculates slope in degrees for each point.
+        heightmap: 2D numpy array (0-4095 range usually)
+        scale_factor: Multiplier to convert height units to horizontal units if needed.
+                      BZ grid is 10m? Height is 0-409.5m? 
+                      Each unit in HG2 is 0.1m (0-4095 => 0-409.5m).
+                      Grid spacing is 1280m / 64 = 20m? No, depends on resolution.
+                      Let's assume standard BZ ratio for now.
+        """
+        # Simple gradient magnitude
+        gy, gx = np.gradient(heightmap)
+        slope = np.sqrt(gx**2 + gy**2)
+        # Normalize/Convert to degrees? 
+        # For now, let's keep it abstract or use a heuristic. 
+        # User rules use 0-90 degrees.
+        # atan(slope) * 180/pi
+        # We need the ratio of dz/dx. 
+        # If height is 0.1m units, and grid is X meters.
+        # Let's approximate grid as 10.0 units? 
+        # Actually simplest is to normalize to 0-90 range based on observable max.
+        return np.degrees(np.arctan(slope))
+
+    @staticmethod
+    def generate_mat(height_data, rules, progress_callback=None):
+        """
+        height_data: 2D numpy array (H, W)
+        rules: List of dicts [{'mat_id': int, 'min_h': float, 'max_h': float, 'min_s': float, 'max_s': float}]
+               Ordered by Priority (Lowest to Highest).
+        """
+        h, w = height_data.shape
+        # MAT resolution is half of heightmap
+        mat_h, mat_w = h // 2, w // 2
+        
+        # 1. Calculate Vertex Materials (Ideal)
+        # Result: (H, W) array of Material IDs
+        slope_map = AutoPainter.calculate_slope_map(height_data)
+        vertex_mats = np.zeros_like(height_data, dtype=np.uint8)
+        
+        # Apply rules from bottom to top priority
+        # Default to 0
+        for rule in rules:
+            mat_id = rule['mat_id']
+            min_h, max_h = rule['min_h'], rule['max_h']
+            min_s, max_s = rule['min_s'], rule['max_s']
+            
+            mask = (height_data >= min_h) & (height_data <= max_h) & \
+                   (slope_map >= min_s) & (slope_map <= max_s)
+            vertex_mats[mask] = mat_id
+            
+        # 2. Generate Tiles (Marching Squares)
+        mat_data = np.zeros((mat_h, mat_w), dtype=np.uint16)
+        
+        for y in range(mat_h):
+            if progress_callback and y % 10 == 0:
+                progress_callback(y / mat_h * 100)
+                
+            for x in range(mat_w):
+                # Get the 4 corners of this tile
+                # Grid:
+                # TL(x,y)     TR(x+1,y)
+                # BL(x,y+1)   BR(x+1,y+1)
+                
+                # In numpy/image coords (row, col):
+                # TL(y,x)     TR(y, x+1)
+                # BL(y+1,x)   BR(y+1, x+1)
+                
+                # Careful with indices vs size
+                colors = [
+                    vertex_mats[y*2, x*2],     # TL
+                    vertex_mats[y*2, x*2+1],   # TR
+                    vertex_mats[y*2+1, x*2+1], # BR
+                    vertex_mats[y*2+1, x*2]    # BL
+                ]
+                
+                # Determine dominant materials
+                unique_mats = sorted(list(set(colors)))
+                
+                base_mat = unique_mats[0]
+                next_mat = unique_mats[-1] if len(unique_mats) > 1 else base_mat
+                
+                # If only 1 material -> Solid
+                if base_mat == next_mat:
+                    # Solid
+                    entry = AutoPainter.encode_entry(base_mat, base_mat, cap=0, flip=0, rot=0, variant=0)
+                else:
+                    # Transition
+                    # We only support 2-way transitions well in this format (Base -> Next).
+                    # Higher ID usually means "Overlaying" Lower ID.
+                    # So Base = Lower, Next = Higher.
+                    # But if we have [0, 2, 5], we might struggle. 
+                    # Let's simplify: Base = Min(colors), Next = Max(colors)
+                    
+                    # Generate 4-bit mask for High Priority (Next) corners
+                    # TL, TR, BR, BL order
+                    mask = 0
+                    if colors[0] == next_mat: mask |= 8 # 1000
+                    if colors[1] == next_mat: mask |= 4 # 0100
+                    if colors[2] == next_mat: mask |= 2 # 0010
+                    if colors[3] == next_mat: mask |= 1 # 0001
+                    
+                    # Look up shape
+                    cap = 0
+                    flip = 0
+                    rot = 0
+                    
+                    # Shapes (1 = Next Mat / High Priority)
+                    if mask == 0: # All Base
+                        pass # handled above
+                    elif mask == 15: # All Next
+                        base_mat = next_mat # promote
+                    
+                    # Corners (1 high corner) -> Cap
+                    elif mask == 8: # 1000 TL
+                        cap=0; flip=0; rot=0 # Check rotation later
+                    elif mask == 4: # 0100 TR
+                        cap=0; flip=0; rot=3 # -90 deg
+                    elif mask == 2: # 0010 BR
+                        cap=0; flip=0; rot=2 # 180 deg
+                    elif mask == 1: # 0001 BL
+                        cap=0; flip=0; rot=1 # 90 deg
+                        
+                    # Sides (2 adjacent) -> Cap (Side?) -> Actually traditionally "Cap" is 1 corner?
+                    # Some sets use Caps for sides too. 
+                    # If 2 corners are high, it's a Half/Half.
+                    # BZ usually handles this with Caps or Diagonals?
+                    # Let's approximate 2-side as Cap for now? Or Diagonal?
+                    # Diagonal is 1010 (Opposite).
+                    
+                    # Half/Half (Side)
+                    elif mask == 12: # 1100 Top (TL+TR)
+                        cap=0; flip=1; rot=0 
+                    elif mask == 6:  # 0110 Right (TR+BR)
+                        cap=0; flip=1; rot=3
+                    elif mask == 3:  # 0011 Bottom (BR+BL)
+                        cap=0; flip=1; rot=2
+                    elif mask == 9:  # 1001 Left (TL+BL)
+                        cap=0; flip=1; rot=1
+                        
+                    # Diagonals (Opposite)
+                    elif mask == 10: # 1010 TL+BR
+                        cap=1; flip=0; rot=0
+                    elif mask == 5:  # 0101 TR+BL
+                        cap=1; flip=1; rot=0 # or rot 1
+                        
+                    # Inverse Corners (3 High, 1 Low) -> Swap Base/Next and treat as 1 High Corner of Low
+                    # Mask 0111 (7) -> TL is Low.
+                    elif mask in [7, 11, 13, 14]:
+                        # Swap
+                        temp = base_mat
+                        base_mat = next_mat
+                        next_mat = temp
+                        # Invert mask (bitwise not & 15)
+                        inv_mask = (~mask) & 15
+                        # Re-process as Corner
+                        if inv_mask == 8: # TL
+                            cap=0; flip=0; rot=0
+                        elif inv_mask == 4: # TR
+                            cap=0; flip=0; rot=3
+                        elif inv_mask == 2: # BR
+                            cap=0; flip=0; rot=2
+                        elif inv_mask == 1: # BL
+                            cap=0; flip=0; rot=1
+                            
+                    entry = AutoPainter.encode_entry(base_mat, next_mat, cap, flip, rot, variant=0)
+                
+                mat_data[y, x] = entry
+                
+        return mat_data
+
+    @staticmethod
+    def encode_entry(base, next_mat, cap, flip, rot, variant=0):
+        """
+        Constructs the 16-bit MAT entry.
+        0-1: Variant
+        2-3: Unused
+        4-5: Rotation
+        6: Flip
+        7: Cap
+        8-11: Next
+        12-15: Base
+        """
+        entry = 0
+        entry |= (variant & 0x3)
+        entry |= ((rot & 0x3) << 4)
+        entry |= ((flip & 0x1) << 6)
+        entry |= ((cap & 0x1) << 7)
+        entry |= ((next_mat & 0xF) << 8)
+        entry |= ((base & 0xF) << 12)
+        return entry
+
+class TRNParser:
+    @staticmethod
+    def parse(path):
+        data = {
+            "MinX": 0.0, "MinZ": 0.0, "MaterialName": None,
+            "TextureTypes": [] # List of found IDs
+        }
+        if not os.path.exists(path):
+            return data
+            
+        current_section = None
+        
+        try:
+            with open(path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('//') or line.startswith(';'): 
+                        continue
+                        
+                    if line.startswith('[') and line.endswith(']'):
+                        current_section = line[1:-1]
+                        
+                        # Parse Texture Types
+                        if current_section.lower().startswith("texturetype"):
+                            try:
+                                # Extract ID from "TextureType0" -> 0
+                                tid_str = current_section[11:] 
+                                tid = int(tid_str)
+                                if tid not in data["TextureTypes"]:
+                                    data["TextureTypes"].append(tid)
+                            except: 
+                                pass
+                        continue
+
+                    # Handle "MinX=123"
+                    if "=" in line:
+                        key, val = [x.strip() for x in line.split("=", 1)]
+                        
+                        # Global / Atlases scope
+                        if key.lower() == "minx":
+                            data["MinX"] = float(val)
+                        elif key.lower() == "minz":
+                            data["MinZ"] = float(val)
+                        elif key.lower() == "materialname":
+                            data["MaterialName"] = val
+                            
+        except Exception as e:
+            print(f"TRN Parser Error: {e}")
+        
+        data["TextureTypes"].sort()
+        return data
+
+class BZNParser:
+    @staticmethod
+    def parse(path):
+        objects = []
+        paths = []
+        
+        if not os.path.exists(path):
+            return objects, paths
+            
+        try:
+            with open(path, 'r') as f:
+                # Check for binary chars in first chunk to fail fast
+                try:
+                    chunk = f.read(1024)
+                    if '\0' in chunk:
+                        raise UnicodeDecodeError("Binary check", b"", 0, 0, "Null byte found")
+                    f.seek(0)
+                    lines = f.readlines()
+                except UnicodeDecodeError:
+                    raise ValueError("Binary BZN file detected. Please save as ASCII using '/asciisave' game argument.")
+            
+            current_obj = None
+            in_game_object = False
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                if line == "[GameObject]":
+                    if current_obj:
+                        objects.append(current_obj)
+                    in_game_object = True
+                    current_obj = {
+                        "name": "Unknown", 
+                        "odf": "Unknown", 
+                        "pos": (0,0,0), 
+                        "rot": 0,
+                        "label": None
+                    }
+                    
+                    # Look ahead for immediate name/odf
+                    if i + 2 < len(lines):
+                        current_obj["name"] = lines[i+1].strip()
+                        current_obj["odf"] = lines[i+2].strip()
+                        i += 2
+                
+                elif line == "[AiPath]":
+                    if current_obj:
+                        objects.append(current_obj)
+                        current_obj = None
+                    in_game_object = False
+                    # Path parsing can be added here
+                    
+                elif in_game_object and current_obj:
+                    if line.startswith("label ="):
+                        current_obj["label"] = line.split("=", 1)[1].strip()
+                        
+                    elif "seqno [" in line:
+                        # Parse Position (Based on BZMapIO logic)
+                        # seqno [1] is at lines[i]
+                        # BZMapIO: X at i+8, Z at i+4 (inverted?), Y at i+6
+                        # Wait, BZMapIO said:
+                        # loc[0] (X) = line[x+8] - MinZ  <-- Swapped axis?
+                        # loc[1] (Y) = line[x+4]*-1 - MinX
+                        # loc[2] (Z) = line[x+6] - MinHeight
+                        
+                        # Let's try to parse the block safely
+                        try:
+                            # Typically seqno block is 
+                            # seqno [1]
+                            # 4 (count?)
+                            # val1
+                            # val2 ...
+                            
+                            # Let's just store raw values if possible, or try to interpret
+                            # Using BZMapIO logic for now assuming standard format
+                            if i + 8 < len(lines):
+                                # BZ coords are X, Z, Y (Up). 
+                                # WorldBuilder uses X, Y (Top-Down).
+                                # BZMapIO seems to swap X/Z for Blender coords.
+                                
+                                # Let's assume lines[i+4] is X-ish and lines[i+8] is Z-ish
+                                # We will clarify coordinates when visualizing
+                                raw_x = float(lines[i+4].strip())
+                                raw_h = float(lines[i+6].strip())
+                                raw_z = float(lines[i+8].strip())
+                                current_obj["pos"] = (raw_x, raw_h, raw_z)
+                        except:
+                            pass
+                            
+                i += 1
+            
+            if current_obj:
+                objects.append(current_obj)
+                
+        except Exception as e:
+            print(f"BZN Parser Error: {e}")
+            raise e
+            
+        return objects, paths
+
 class BZ98TRNArchitect:
     def __init__(self, root):
         self.root = root # Keep reference to main root
@@ -385,6 +737,276 @@ class BZ98TRNArchitect:
         ttk.Label(container, text="BZ98R World Builder | Developed by GrizzlyOne95", 
                  font=(self.custom_font_name, 8, "italic"), foreground="#666666").pack(side="bottom", anchor="w")
     
+    def setup_auto_painter_ui(self):
+        self.tab_paint = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_paint, text="Auto-Painter")
+        
+        # Layout: Left Panel (Rules), Right Panel (Rules List)
+        # Actually need: Source HG2 (already loaded?), Rules List, Preview Button, Generate Button.
+        
+        # Top Bar: Controls
+        top_frame = ttk.LabelFrame(self.tab_paint, text="Configuration")
+        top_frame.pack(fill="x", padx=5, pady=5)
+        
+        # Rule Inputs
+        r_frame = ttk.Frame(top_frame)
+        r_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Label(r_frame, text="Mat ID:").pack(side="left")
+        self.ap_mat_id = ttk.Entry(r_frame, width=3)
+        self.ap_mat_id.pack(side="left", padx=2)
+        self.ap_mat_id.insert(0, "0")
+        
+        ttk.Label(r_frame, text="Elev(min-max):").pack(side="left", padx=5)
+        self.ap_min_h = ttk.Entry(r_frame, width=5)
+        self.ap_min_h.pack(side="left")
+        self.ap_min_h.insert(0, "0")
+        self.ap_max_h = ttk.Entry(r_frame, width=5)
+        self.ap_max_h.pack(side="left")
+        self.ap_max_h.insert(0, "4095")
+        
+        ttk.Label(r_frame, text="Slope(min-max):").pack(side="left", padx=5)
+        self.ap_min_s = ttk.Entry(r_frame, width=4)
+        self.ap_min_s.pack(side="left")
+        self.ap_min_s.insert(0, "0")
+        self.ap_max_s = ttk.Entry(r_frame, width=4)
+        self.ap_max_s.pack(side="left")
+        self.ap_max_s.insert(0, "90")
+        
+        ttk.Button(r_frame, text="Add/Update Rule", command=self.add_paint_rule).pack(side="left", padx=10)
+        
+        # Rules List
+        list_frame = ttk.Frame(self.tab_paint)
+        list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        
+        cols = ("ID", "Height", "Slope")
+        self.rules_tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=8)
+        
+        # Sort logic: click header to sort
+        self.rules_tree.heading("ID", text="Mat ID", command=lambda: self.sort_paint_rules("mat_id"))
+        self.rules_tree.heading("Height", text="Elevation Range", command=lambda: self.sort_paint_rules("min_h"))
+        self.rules_tree.heading("Slope", text="Slope Range", command=lambda: self.sort_paint_rules("min_s"))
+        
+        self.rules_tree.pack(side="left", fill="both", expand=True)
+        
+        # Buttons
+        btn_frame = ttk.Frame(self.tab_paint)
+        btn_frame.pack(fill="x", padx=5, pady=5)
+        
+        ttk.Button(btn_frame, text="Load TRN/Rules...", command=self.load_auto_painter_config).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Save Rules...", command=self.save_auto_painter_config).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Auto-Balance", command=self.auto_balance_rules).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Validate", command=self.validate_rules).pack(side="left", padx=2)
+        
+        ttk.Button(btn_frame, text="Clear", command=self.clear_paint_rules).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Generate .MAT...", command=self.run_auto_painter).pack(side="right", padx=2)
+        
+        # Store rules
+        self.paint_rules = []
+        self.sort_descending = False
+
+    def sort_paint_rules(self, key):
+        self.sort_descending = not self.sort_descending
+        self.paint_rules.sort(key=lambda x: x[key], reverse=self.sort_descending)
+        self.refresh_rules_list()
+        
+    def add_paint_rule(self):
+        try:
+            mid = int(self.ap_mat_id.get())
+            minh = float(self.ap_min_h.get())
+            maxh = float(self.ap_max_h.get())
+            mins = float(self.ap_min_s.get())
+            maxs = float(self.ap_max_s.get())
+            
+            rule = {
+                'mat_id': mid,
+                'min_h': minh, 'max_h': maxh,
+                'min_s': mins, 'max_s': maxs
+            }
+            self.paint_rules.append(rule)
+            self.refresh_rules_list()
+        except ValueError:
+            messagebox.showerror("Error", "Invalid numeric values")
+            
+    def clear_paint_rules(self):
+        self.paint_rules = []
+        self.refresh_rules_list()
+        
+    def refresh_rules_list(self):
+        for i in self.rules_tree.get_children():
+            self.rules_tree.delete(i)
+        for r in self.paint_rules:
+            self.rules_tree.insert("", "end", values=(
+                r['mat_id'], 
+                f"{r['min_h']} - {r['max_h']}",
+                f"{r['min_s']} - {r['max_s']}"
+            ))
+            
+    def run_auto_painter(self):
+        # 1. Get Height Data
+        if not self.hg2_path.get():
+             messagebox.showerror("Error", "Please select an input image/HG2 first.")
+             return
+             
+        # Load Data similar to convert worker
+        try:
+            img = Image.open(self.hg2_path.get()).convert("I;16")
+            arr = np.array(img).astype(np.float32)
+            # Replicate scaling logic used in HG2
+            is_hg2 = self.hg2_path.get().lower().endswith(".hg2")
+            
+            if not is_hg2:
+                arr = (arr / 65535.0) * 4095.0
+            
+            # Run Painter
+            mat_data = AutoPainter.generate_mat(arr, self.paint_rules)
+            
+            # Save
+            save_path = filedialog.asksaveasfilename(defaultextension=".mat", filetypes=[("Material Map", "*.mat")])
+            if save_path:
+                with open(save_path, "wb") as f:
+                    f.write(mat_data.tobytes()) # Numpy tobytes writes simple binary array
+                messagebox.showinfo("Success", f"Saved {save_path}")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed: {e}")
+
+    def load_auto_painter_config(self):
+        path = filedialog.askopenfilename(filetypes=[("Paint Config", "*.trn *.ini *.txt"), ("All Files", "*.*")])
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        
+        if ext == ".trn":
+            # Load TRN -> Auto-populate materials
+            data = TRNParser.parse(path)
+            if not data.get("TextureTypes"):
+                messagebox.showwarning("Warning", "No [TextureTypeX] sections found in TRN.")
+                return
+                
+            if messagebox.askyesno("Confirm", "This will clear existing rules and populate from TRN. Continue?"):
+                self.clear_paint_rules()
+                
+                # Default max height
+                max_h = 1000.0
+                
+                for tid in data["TextureTypes"]:
+                    self.add_paint_rule_internal(tid, 0, max_h, 0, 90)
+                
+                messagebox.showinfo("Loaded", f"Loaded {len(data['TextureTypes'])} materials from TRN.")
+                
+        else:
+            # Load INI/TXT [LayerX] format
+            try:
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(path)
+                
+                new_rules = []
+                for section in config.sections():
+                    if section.lower().startswith("layer"):
+                        try:
+                            mat_str = config.get(section, "Material")
+                            mat_id = int(mat_str.split('(')[0].strip())
+                            
+                            min_h = float(config.get(section, "ElevationStart"))
+                            max_h = float(config.get(section, "ElevationEnd"))
+                            min_s = float(config.get(section, "SlopeStart"))
+                            max_s = float(config.get(section, "SlopeEnd"))
+                            
+                            new_rules.append({
+                                'mat_id': mat_id,
+                                'min_h': min_h, 'max_h': max_h,
+                                'min_s': min_s, 'max_s': max_s
+                            })
+                        except Exception as e:
+                            print(f"Skipping section {section}: {e}")
+                            
+                if new_rules:
+                    if messagebox.askyesno("Confirm", f"Found {len(new_rules)} rules. Replace existing?"):
+                        self.paint_rules = new_rules
+                        self.refresh_rules_list()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to parse INI: {e}")
+
+    def save_auto_painter_config(self):
+        path = filedialog.asksaveasfilename(defaultextension=".ini", filetypes=[("INI Config", "*.ini")])
+        if not path:
+            return
+            
+        try:
+            with open(path, 'w') as f:
+                for i, rule in enumerate(self.paint_rules):
+                    f.write(f"[Layer{i}]\n")
+                    f.write(f"ElevationStart = {rule['min_h']}\n")
+                    f.write(f"ElevationEnd   = {rule['max_h']}\n")
+                    f.write(f"SlopeStart     = {rule['min_s']}\n")
+                    f.write(f"SlopeEnd       = {rule['max_s']}\n")
+                    f.write(f"Material       = {rule['mat_id']}\n\n")
+            messagebox.showinfo("Success", "Rules saved.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save: {e}")
+
+    def validate_rules(self):
+        warnings = []
+        
+        for i, rule in enumerate(self.paint_rules):
+            # Check basic validity
+            if rule['min_h'] >= rule['max_h']:
+                warnings.append(f"Rule {i}(Mat{rule['mat_id']}): Min Height >= Max Height")
+            if rule['min_s'] >= rule['max_s']:
+                warnings.append(f"Rule {i}(Mat{rule['mat_id']}): Min Slope >= Max Slope")
+            
+            # Check Bounds
+            if rule['min_s'] < 0 or rule['max_s'] > 90:
+                warnings.append(f"Rule {i}(Mat{rule['mat_id']}): Slope out of range (0-90)")
+                
+            if rule['min_h'] < 0 or rule['max_h'] > 4095:
+                warnings.append(f"Rule {i}(Mat{rule['mat_id']}): Height out of valid range (0-4095)")
+                
+            # Check for exact duplicates (redundant)
+            for j in range(i+1, len(self.paint_rules)):
+                r2 = self.paint_rules[j]
+                if (rule['mat_id'] == r2['mat_id'] and
+                    rule['min_h'] == r2['min_h'] and rule['max_h'] == r2['max_h'] and
+                    rule['min_s'] == r2['min_s'] and rule['max_s'] == r2['max_s']):
+                    warnings.append(f"Rule {i} and {j} are identical duplicates.")
+
+        # Note: Overlaps are allowed due to painter's algorithm (later rules overwrite earlier ones)
+        
+        if warnings:
+            messagebox.showwarning("Validation Issues", "\n".join(warnings[:10]))
+        else:
+            messagebox.showinfo("Validation", "Rules look valid! (Overlaps are allowed)")
+
+    def auto_balance_rules(self):
+        if not self.paint_rules:
+            return
+        
+        count = len(self.paint_rules)
+        max_h = 819.1 # Max BZMapIO elevation (8191 / 10)
+        chunk = max_h / count
+        
+        for i, rule in enumerate(self.paint_rules):
+            rule['min_h'] = float(i * chunk)
+            rule['max_h'] = float((i + 1) * chunk)
+            rule['min_s'] = 0
+            rule['max_s'] = 90
+            
+        self.refresh_rules_list()
+        messagebox.showinfo("Auto-Balance", f"Balanced {count} rules across 0-{max_h}m.")
+
+    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s):
+        self.paint_rules.append({
+            "mat_id": mat_id,
+            "min_h": float(min_h),
+            "max_h": float(max_h),
+            "min_s": float(min_s),
+            "max_s": float(max_s)
+        })
+        self.refresh_rules_list()
+
     def browse_hg2(self):
         path = filedialog.askopenfilename(filetypes=[("Heightmaps", "*.hg2 *.png *.bmp")])
         if path:
@@ -401,6 +1023,46 @@ class BZ98TRNArchitect:
                     pass
             # Trigger preview update after selection
             self.update_hg2_preview()
+            
+    def load_mission_overlay(self):
+        # 1. Ask for BZN file (ASCII)
+        bzn_path = filedialog.askopenfilename(title="Select Mission File (ASCII)", filetypes=[("Battlezone Mission", "*.bzn")])
+        if not bzn_path:
+            return
+            
+        # 2. Try to find matching TRN
+        base_path = os.path.splitext(bzn_path)[0]
+        trn_path = base_path + ".trn"
+        
+        # 3. Parse TRN
+        trn_data = TRNParser.parse(trn_path)
+        self.min_x = trn_data.get("MinX", 0.0)
+        self.min_z = trn_data.get("MinZ", 0.0)
+        
+        # 4. Parse BZN
+        # 4. Parse BZN
+        try:
+            self.mission_objects, self.ai_paths = BZNParser.parse(bzn_path)
+            
+            info = f"MinX: {self.min_x}, MinZ: {self.min_z}\n"
+            info += f"Objects: {len(self.mission_objects)}\n"
+            info += f"Paths: {len(self.ai_paths)}"
+            
+            self.mission_info.config(state="normal")
+            self.mission_info.delete("1.0", "end")
+            self.mission_info.insert("1.0", info)
+            self.mission_info.config(state="disabled")
+            
+            self.redraw_mission_canvas()
+            
+        except ValueError as e:
+            messagebox.showerror("Error", str(e))
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to parse BZN: {e}")
+
+
+
+
 
     def convert_hg2_to_png(self):
         path = self.hg2_path.get()
@@ -497,12 +1159,21 @@ class BZ98TRNArchitect:
             else:
                 img_final_arr = arr
 
-            # 5. Convert to uint16 Array for binary packing
-            img_final_arr = np.clip(img_final_arr, 0, 65535).astype(np.uint16)
+            # 5. Scale to 12-bit (0-4095) and Mask
+            # The BZ98R spec uses 12 bits for height (0-4095) and 4 bits for flags.
+            # We must scale the 16-bit input (0-65535) down to 0-4095.
+            img_final_arr = (img_final_arr / 65535.0) * 4095.0
+            img_final_arr = np.clip(img_final_arr, 0, 4095).astype(np.uint16)
+            
             h, w = img_final_arr.shape 
             
             # 6. Construct 12-byte HG2 Header using the calculated depth
-            # Format: version, depth, width_zones, length_zones, fixed_val, padding
+            # Format: version, depth, width_zones, length_zones, map_version(low), map_version(high)/padding
+            # BZMapIO.py uses a 4-byte integer '10' for the last chunk.
+            # My previous code used 10 for the first 2 bytes and 0 for padding.
+            # struct.pack("<I") of 10 is b'\x0A\x00\x00\x00'
+            # struct.pack("<HH") of (10, 0) is b'\x0A\x00\x00\x00'
+            # So (10, 0) is identical to BZMapIO's implementation.
             header = struct.pack("<HHHHHH", 1, depth, z_w, z_l, 10, 0)
             
             # 7. Pack data into zones
@@ -578,12 +1249,22 @@ class BZ98TRNArchitect:
         self.notebook.add(self.tab_sky, text=" Cubemap Creator ")
         self.setup_sky_tab()
 
-        # TAB 5: Help & About
+        # TAB 5: Mission Visualizer
+        self.tab_mission = ttk.Frame(self.notebook)
+        self.notebook.add(self.tab_mission, text=" Mission Visualizer ")
+        self.setup_mission_tab()
+
+        # TAB 6: Auto-Painter
+        self.setup_auto_painter_ui()
+
+        # TAB 7: Help & About (LAST)
         self.tab_help = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_help, text=" Help & About ")
         self.setup_help_tab()
 
-        # --- TAB 1 CONTROLS ---
+
+
+    # --- TAB 1 CONTROLS ---
         left_container = ttk.Frame(self.tab_trn, width=360)
         left_container.pack(side="left", fill="y")
         left_container.pack_propagate(False) 
@@ -599,11 +1280,12 @@ class BZ98TRNArchitect:
         scrollbar.pack(side="right", fill="y")
         canvas.pack(side="left", fill="both", expand=True)
         
-# --- HELP BUTTON ---
+        # Help Btn
         help_btn_frame = ttk.Frame(ctrls)
         help_btn_frame.pack(fill="x", pady=(0, 10))
         ttk.Button(help_btn_frame, text="❓ About / Help", 
                   command=lambda: self.notebook.select(self.tab_help)).pack(side="right")
+
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1*(event.delta/120)), "units")
@@ -2085,6 +2767,316 @@ class BZ98TRNArchitect:
             self.log(f"Error: {str(e)}", "error")
         finally:
             self.root.after(0, lambda: self.btn_generate.config(text="2. BUILD ATLAS", state="normal"))
+
+    def setup_mission_tab(self):
+        container = ttk.Frame(self.tab_mission, padding=20)
+        container.pack(fill="both", expand=True)
+        
+        # --- LEFT COLUMN: CONTROLS ---
+        left_col = ttk.Frame(container, width=300)
+        left_col.pack(side="left", fill="y", padx=(0, 20))
+        left_col.pack_propagate(False)
+        
+        # 1. Background Map
+        ttk.Label(left_col, text="1. BACKGROUND MAP", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        ttk.Label(left_col, text="Load an image or HG2 to verify alignment.", font=("Consolas", 8), foreground="#888888").pack(anchor="w", pady=(0, 5))
+        
+        ttk.Button(left_col, text="📂 Load Map Image/HG2", command=self.browse_mission_bg).pack(fill="x", pady=(0, 15))
+        
+        # 2. Mission Overlay
+        ttk.Label(left_col, text="2. MISSION DATA", font=(self.custom_font_name, 11, "bold"), foreground=BZ_GREEN).pack(anchor="w")
+        ttk.Label(left_col, text="Load .bzn (ASCII) to visualize objects.", font=("Consolas", 8), foreground="#888888").pack(anchor="w", pady=(0, 5))
+        ttk.Button(left_col, text="📂 Load .bzn Mission", command=self.load_mission_overlay).pack(fill="x", pady=(0, 15))
+        
+        # Info Box
+        self.mission_info = tk.Text(left_col, height=10, bg="#050505", fg=BZ_FG, relief="flat", font=("Consolas", 9))
+        self.mission_info.pack(fill="x", pady=5)
+        self.mission_info.insert("1.0", "Expected TRN Offset: N/A\nObjects Loaded: 0")
+        self.mission_info.config(state="disabled")
+        
+        # --- RIGHT COLUMN: PREVIEW ---
+        right_col = ttk.Frame(container)
+        right_col.pack(side="right", fill="both", expand=True)
+        
+        self.mission_canvas = tk.Canvas(right_col, bg="#000000", highlightthickness=0)
+        self.mission_canvas.pack(fill="both", expand=True)
+        
+        # Bind Mouse Zoom/Pan (Reuse logic?)
+        self.mission_canvas.bind("<MouseWheel>", self._on_mission_zoom)
+        self.mission_canvas.bind("<ButtonPress-1>", self._on_mission_pan_start)
+        self.mission_canvas.bind("<B1-Motion>", self._on_mission_pan_move)
+        
+        self.mission_zoom = 1.0
+        self.mission_pan_x = 0
+        self.mission_pan_y = 0
+        self.mission_bg_img = None
+        self.mission_bg_photo = None
+        
+    def browse_mission_bg(self):
+        path = filedialog.askopenfilename(filetypes=[("Map Image", "*.hg2 *.png *.bmp *.jpg")])
+        if not path: return
+        
+        # Load Image
+        try:
+            if path.lower().endswith(".hg2"):
+                # HG2 Loading Logic (Visual)
+                with open(path, "rb") as f:
+                    header = f.read(12)
+                    _, _, z_w, z_l, _, _ = struct.unpack("<HHHHHH", header)
+                    raw_data = f.read()
+                    arr = np.frombuffer(raw_data, dtype=np.uint16).reshape((z_l*64, z_w*64))
+                    # Normalize for display
+                    arr_norm = (arr / 4095.0 * 255).astype(np.uint8)
+                    img = Image.fromarray(arr_norm)
+            else:
+                img = Image.open(path).convert("L") # Mode L for grayscale map
+                
+            self.mission_bg_img = img
+            self.redraw_mission_canvas()
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load map: {e}")
+
+    def _on_mission_zoom(self, event):
+        scale = 1.1 if event.delta > 0 else 0.9
+        self.mission_zoom *= scale
+        self.redraw_mission_canvas()
+
+    def _on_mission_pan_start(self, event):
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+
+    def _on_mission_pan_move(self, event):
+        dx = event.x - self._pan_start_x
+        dy = event.y - self._pan_start_y
+        self.mission_pan_x += dx
+        self.mission_pan_y += dy
+        self._pan_start_x = event.x
+        self._pan_start_y = event.y
+        self.redraw_mission_canvas()
+        
+    def redraw_mission_canvas(self):
+        self.mission_canvas.delete("all")
+        cw = self.mission_canvas.winfo_width()
+        ch = self.mission_canvas.winfo_height()
+        
+        # 1. Draw Background
+        if self.mission_bg_img:
+            # Scale and Position
+            w, h = self.mission_bg_img.size
+            new_w = int(w * self.mission_zoom)
+            new_h = int(h * self.mission_zoom)
+            
+            # Optimization: Don't resize if huge? Tkinter handles it okayish.
+            resized = self.mission_bg_img.resize((new_w, new_h), Image.Resampling.NEAREST)
+            self.mission_bg_photo = ImageTk.PhotoImage(resized)
+            
+            # Center + Pan
+            x = cw//2 + self.mission_pan_x
+            y = ch//2 + self.mission_pan_y
+            self.mission_canvas.create_image(x, y, image=self.mission_bg_photo, anchor="center")
+            
+            # Store bounds for object mapping
+            self.map_draw_rect = (x - new_w//2, y - new_h//2, new_w, new_h)
+            
+        # 2. Draw Objects
+        if hasattr(self, 'mission_objects') and self.mission_objects:
+            self.draw_mission_objects_on_canvas(self.mission_canvas)
+
+    def draw_mission_objects_on_canvas(self, canvas):
+        # We need the map bounds to map world coords to canvas coords.
+        # If no map bg loaded, assume 5120m centered?
+        if not hasattr(self, 'map_draw_rect'):
+             # Default centered 500x500 box?
+             cw = canvas.winfo_width()
+             ch = canvas.winfo_height()
+             self.map_draw_rect = (cw//2-250, ch//2-250, 500, 500)
+             
+        mx, my, mw, mh = self.map_draw_rect
+        
+        # Coordinate Space:
+        # Texture Map (0,0) -> (Width, Height) usually corresponds to World (MinX, MinZ) -> (MaxX, MaxZ)
+        # BZ Coords: +X (East), +Z (North).
+        # Image Coords: +X (Right), +Y (Down).
+        # So World Z maps to Image Y (inverted).
+        
+        # Assume Map Image covers the whole TRN area?
+        # If we parsed TRN MinX/MinZ, we can offset.
+        offset_x = getattr(self, 'min_x', 0)
+        offset_z = getattr(self, 'min_z', 0)
+        
+        # We need map dimensions in METERS to scale properly.
+        # HG2 -> 1px = ~10m? Or 20m? Depends on resolution.
+        # If we loaded an HG2, we know pixels. If we don't know grid step, we guess.
+        # Config has "tile_res" and "map_presets".
+        # Let's assume the loaded image represents the full square world.
+        # World Size?
+        try:
+             world_size = int(self.selected_preset.get().split('(')[1].split('m')[0])
+        except:
+             world_size = 5120
+             
+        # Scale Factor: Pixels per Meter
+        ppm = mw / world_size
+        
+        for obj in self.mission_objects:
+            wx = obj["pos"][0]
+            wz = obj["pos"][2] # Z is height? No, pos=(x,h,z) from my parser
+             
+            # Normalize to 0-WorldSize based on offset
+            # Obj 0,0 is at World 0,0.
+            # Map Image 0,0 (Top Left) corresponds to World MinX, MaxZ (since Z goes up)
+            # Wait, BZ coordinates: 0,0 is center of specific map? Or corner?
+            # TRN Map:
+            # (MinX, MinZ) -> Bottom Left of the map?
+            # So Image (0, Height) -> (MinX, MinZ)
+            # Image (0, 0) -> (MinX, MaxZ)
+            
+            # Rel to Map Origin
+            rel_x = wx - offset_x
+            rel_z = wz - offset_z
+            
+            # Map to Image Pixels
+            # img_x = rel_x * ppm
+            # img_y = (world_size - rel_z) * ppm (Flip Z)
+            
+            # Canvas Coords
+            cx = mx + (rel_x * ppm)
+            cy = my + (mh - (rel_z * ppm)) # Flip Z for image Y 
+            
+            # Draw
+            color = BZ_GREEN
+            cls = obj.get("odf", "").lower()
+            if "recycle" in cls or "cons" in cls: color = "#ffee00" # Yellow
+            elif "fact" in cls: color = "#ff8800" # Orange
+            elif "turr" in cls or "tow" in cls: color = "#ff4444" # Red
+            elif "scav" in cls: color = "#0088ff" # Blue
+            
+            canvas.create_rectangle(cx-2, cy-2, cx+2, cy+2, fill=color, outline="")
+
+    def load_auto_painter_config(self):
+        path = filedialog.askopenfilename(filetypes=[("Paint Config", "*.trn *.ini *.txt"), ("All Files", "*.*")])
+        if not path:
+            return
+
+        ext = os.path.splitext(path)[1].lower()
+        
+        if ext == ".trn":
+            # Load TRN -> Auto-populate materials
+            data = TRNParser.parse(path)
+            if not data.get("TextureTypes"):
+                messagebox.showwarning("Warning", "No [TextureTypeX] sections found in TRN.")
+                return
+                
+            if messagebox.askyesno("Confirm", "This will clear existing rules and populate from TRN. Continue?"):
+                self.clear_paint_rules()
+                
+                # Default max height
+                max_h = 1000.0
+                
+                for tid in data["TextureTypes"]:
+                    self.add_paint_rule_internal(tid, 0, max_h, 0, 90)
+                
+                messagebox.showinfo("Loaded", f"Loaded {len(data['TextureTypes'])} materials from TRN.")
+                
+        else:
+            # Load INI/TXT [LayerX] format
+            try:
+                import configparser
+                config = configparser.ConfigParser()
+                config.read(path)
+                
+                new_rules = []
+                for section in config.sections():
+                    if section.lower().startswith("layer"):
+                        try:
+                            mat_str = config.get(section, "Material")
+                            mat_id = int(mat_str.split('(')[0].strip())
+                            
+                            min_h = float(config.get(section, "ElevationStart"))
+                            max_h = float(config.get(section, "ElevationEnd"))
+                            min_s = float(config.get(section, "SlopeStart"))
+                            max_s = float(config.get(section, "SlopeEnd"))
+                            
+                            new_rules.append({
+                                'mat_id': mat_id,
+                                'min_h': min_h, 'max_h': max_h,
+                                'min_s': min_s, 'max_s': max_s
+                            })
+                        except Exception as e:
+                            print(f"Skipping section {section}: {e}")
+                            
+                if new_rules:
+                    if messagebox.askyesno("Confirm", f"Found {len(new_rules)} rules. Replace existing?"):
+                        self.paint_rules = new_rules
+                        self.refresh_rules_list()
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to parse INI: {e}")
+
+    def save_auto_painter_config(self):
+        path = filedialog.asksaveasfilename(defaultextension=".ini", filetypes=[("INI Config", "*.ini")])
+        if not path:
+            return
+            
+        try:
+            with open(path, 'w') as f:
+                for i, rule in enumerate(self.paint_rules):
+                    f.write(f"[Layer{i}]\n")
+                    f.write(f"ElevationStart = {rule['min_h']}\n")
+                    f.write(f"ElevationEnd   = {rule['max_h']}\n")
+                    f.write(f"SlopeStart     = {rule['min_s']}\n")
+                    f.write(f"SlopeEnd       = {rule['max_s']}\n")
+                    f.write(f"Material       = {rule['mat_id']}\n\n")
+            messagebox.showinfo("Success", "Rules saved.")
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to save: {e}")
+
+    def validate_rules(self):
+        sorted_rules = sorted(self.paint_rules, key=lambda x: x['min_h'])
+        warnings = []
+        
+        for i in range(len(sorted_rules)):
+            r1 = sorted_rules[i]
+            for j in range(i+1, len(sorted_rules)):
+                r2 = sorted_rules[j]
+                
+                h_overlap = max(0, min(r1['max_h'], r2['max_h']) - max(r1['min_h'], r2['min_h']))
+                if h_overlap > 0:
+                    s_overlap = max(0, min(r1['max_s'], r2['max_s']) - max(r1['min_s'], r2['min_s']))
+                    if s_overlap > 0:
+                        warnings.append(f"Overlap: Rule {i}(Mat{r1['mat_id']}) & {j}(Mat{r2['mat_id']})")
+        
+        if warnings:
+            messagebox.showwarning("Validation Issues", "\n".join(warnings[:10]))
+        else:
+            messagebox.showinfo("Validation", "No obvious overlaps detected.")
+
+    def auto_balance_rules(self):
+        if not self.paint_rules:
+            return
+        
+        count = len(self.paint_rules)
+        max_h = 819.1 # Max BZMapIO elevation (8191 / 10)
+        chunk = max_h / count
+        
+        for i, rule in enumerate(self.paint_rules):
+            rule['min_h'] = float(i * chunk)
+            rule['max_h'] = float((i + 1) * chunk)
+            rule['min_s'] = 0
+            rule['max_s'] = 90
+            
+        self.refresh_rules_list()
+        messagebox.showinfo("Auto-Balance", f"Balanced {count} rules across 0-{max_h}m.")
+
+    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s):
+        self.paint_rules.append({
+            "mat_id": mat_id,
+            "min_h": float(min_h),
+            "max_h": float(max_h),
+            "min_s": float(min_s),
+            "max_s": float(max_s)
+        })
+        self.refresh_rules_list()
 
 if __name__ == "__main__":
     root = tk.Tk(); app = BZ98TRNArchitect(root); root.mainloop()
