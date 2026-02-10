@@ -106,6 +106,240 @@ class ToolTip:
             self.tip_window = None
 
 
+class BinaryFieldType:
+    DATA_VOID = 0
+    DATA_BOOL = 1
+    DATA_CHAR = 2
+    DATA_SHORT = 3
+    DATA_LONG = 4
+    DATA_FLOAT = 5
+    DATA_DOUBLE = 6
+    DATA_ID = 7
+    DATA_PTR = 8
+    DATA_VEC3D = 9
+    DATA_VEC2D = 10
+    DATA_MAT3DOLD = 11
+    DATA_MAT3D = 12
+    DATA_STRING = 13
+    DATA_QUAT = 14
+
+class BinaryBZNParser:
+    def __init__(self, data):
+        self.data = data
+        self.pos = 0
+        self.version = 0
+        self.is_binary = False
+        self.entities = []
+        self.paths = []
+
+    def read_token(self):
+        if self.pos + 4 > len(self.data):
+            return None, None
+        
+        # Tag/Type (2 bytes)
+        tag_type = self.data[self.pos]
+        self.pos += 2
+        
+        # Length (2 bytes)
+        length = struct.unpack("<H", self.data[self.pos:self.pos+2])[0]
+        self.pos += 2
+        
+        # Value
+        if self.pos + length > len(self.data):
+            return tag_type, None
+            
+        value = self.data[self.pos:self.pos+length]
+        self.pos += length
+        
+        return tag_type, value
+
+    def parse_float(self, data):
+        if not data or len(data) < 4: return 0.0
+        return struct.unpack("<f", data[:4])[0]
+
+    def parse_int(self, data):
+        if not data or len(data) < 4: return 0
+        return struct.unpack("<i", data[:4])[0]
+
+    def parse_uint(self, data):
+        if not data or len(data) < 4: return 0
+        return struct.unpack("<I", data[:4])[0]
+
+    def parse_vec2d(self, data, index=0):
+        # Bi-vector (X, Z)
+        offset = index * 8
+        if not data or len(data) < offset + 8: return (0.0, 0.0)
+        x = struct.unpack("<f", data[offset:offset+4])[0]
+        z = struct.unpack("<f", data[offset+4:offset+8])[0]
+        return (x, z)
+
+    def parse_string(self, data):
+        if not data: return ""
+        try:
+            return data.decode('ascii').strip('\x00')
+        except:
+            return ""
+
+    def load(self):
+        """Main entry point to parse paths from BZN data."""
+        self.pos = 0
+        self.paths = []
+        
+        # 1. Version
+        tag, val = self.read_token()
+        if tag is None: return []
+        self.version = self.parse_int(val)
+        
+        # 2. binarySave flag
+        if self.version > 1022:
+            tag, val = self.read_token()
+            self.is_binary = (val[0] != 0) if val else False
+            
+            # 3. msn_filename
+            tag, val = self.read_token()
+            
+        # 4. seq_count
+        tag, val = self.read_token()
+        
+        # 5. missionSave
+        if self.version >= 1016:
+            tag, val = self.read_token()
+            
+        # 6. TerrainName (except 1001)
+        if self.version != 1001:
+            tag, val = self.read_token()
+            
+        # 7. start_time (1011, 1012)
+        if self.version in [1011, 1012]:
+            tag, val = self.read_token()
+            
+        # Hydrate Section
+        # GameObject Count
+        tag, val = self.read_token()
+        if tag is None: return []
+        go_count = self.parse_int(val)
+        
+        # We need to skip GameObjects. Each GameObject starts with a PrjID (DATA_ID = 7)
+        # and has a sequence of tokens. This is hard without a full state machine,
+        # but we can look for the "name" token (CHAR) after the entities list.
+        # Actually, let's just keep reading until we see something matching AOIs or AIPaths.
+        
+        # Skip GameObjects
+        for _ in range(go_count):
+            self._skip_game_object()
+            
+        # Mission Name (CHAR)
+        tag, val = self.read_token()
+        
+        # sObject (PTR)
+        tag, val = self.read_token()
+        
+        # BZ1 1044 extra bool
+        if self.version == 1044:
+            # We don't have Consume logic here, so let's check next tag
+            old_pos = self.pos
+            tag, val = self.read_token()
+            if tag != 4: # If not long (size for AOIs), backtrack
+                self.pos = old_pos
+        
+        # AOIs Count (LONG=4)
+        tag, val = self.read_token()
+        aoi_count = self.parse_int(val)
+        for _ in range(aoi_count):
+            for _ in range(6): # undefptr, team, inter, inside, value, force
+                self.read_token()
+                
+        # AIPaths Count (LONG=4)
+        tag, val = self.read_token()
+        path_count = self.parse_int(val)
+        
+        for _ in range(path_count):
+            path = {"label": "", "points": [], "type": 0}
+            
+            # old_ptr
+            self.read_token()
+            
+            # label size
+            tag, val = self.read_token()
+            label_size = self.parse_int(val)
+            
+            if label_size > 0:
+                tag, val = self.read_token()
+                path["label"] = self.parse_string(val)
+                
+            # pointCount
+            tag, val = self.read_token()
+            pt_count = self.parse_int(val)
+            
+            # points (VEC2D = 10)
+            tag, val = self.read_token()
+            for i in range(pt_count):
+                path["points"].append(self.parse_vec2d(val, i))
+                
+            # pathType
+            tag, val = self.read_token()
+            path["type"] = self.parse_int(val)
+            
+            self.paths.append(path)
+            
+        return self.paths
+
+    def scan_for_paths(self):
+        """Heuristic scan for AI Path structures in binary BZN."""
+        self.paths = []
+        # Search for DATA_VEC2D (10) blocks which are usually path points
+        # and look for the count prefix.
+        
+        # A better heuristic: Search for the string "AiPaths" or look for 
+        # the section after the entities.
+        
+        # Redux BZN usually puts paths towards the end.
+        # Let's search for sequences of (Tag=4, Val=Count) then (Tag=8 or 13, Val=Ptr).
+        
+        # Reset and scan
+        self.pos = 0
+        while self.pos < len(self.data) - 4:
+            old_pos = self.pos
+            tag, val = self.read_token()
+            if tag is None: break
+            
+            # Heuristic: Find a DATA_LONG (4) followed by some tokens, 
+            # then another DATA_LONG that could be a path count.
+            # actually, let's look for the pointCount (tag 4) and points (tag 10) sequence.
+            
+            if tag == 10: # DATA_VEC2D
+                # This might be a path. Let's look backwards for the label.
+                # This is risky. 
+                pass
+                
+        # For now, let's rely on the structured load() and improve _skip_game_object.
+        return self.paths
+
+    def _skip_game_object(self):
+        """Skip a GameObject by consuming its base tokens and then searching for next PrjID."""
+        start = self.pos
+        # Consume base fields
+        for _ in range(7): self.read_token()
+        if self.version > 1001: self.read_token()
+        
+        # Now we are in class-specific data.
+        # We search for the next tag that looks like a PrjID (DATA_ID=7) 
+        # or the end of the entities section (Mission Name DATA_CHAR=2).
+        
+        while self.pos < len(self.data) - 4:
+            next_tag = self.data[self.pos]
+            if next_tag == 7: # PrjID
+                # Check if length is reasonable (e.g. < 64)
+                length = struct.unpack("<H", self.data[self.pos+2:self.pos+4])[0]
+                if length < 64:
+                    return # Found next object
+            elif next_tag == 2: # Mission Name
+                # Check if this could be the end of list
+                return 
+                
+            # Skip one token
+            self.read_token()
+
 class AutoPainter:
     """
     Handles generation of .mat files from heightmap data using configurable rules.
@@ -137,7 +371,56 @@ class AutoPainter:
         return np.degrees(np.arctan(slope))
 
     @staticmethod
-    def generate_mat(height_data, rules, progress_callback=None):
+    def rasterize_path_mask(h, w, bzn_paths, path_label):
+        """Creates a binary mask from a BZN path."""
+        mask = np.zeros((h, w), dtype=bool)
+        target_path = next((p for p in bzn_paths if p['label'] == path_label), None)
+        if not target_path:
+            return mask
+            
+        pts = target_path['points']
+        if not pts:
+            return mask
+            
+        # Rasterize using PIL
+        # BZ points are in world coords (X, Z). 
+        # We need to map them to (W, H).
+        # Heuristic: Find bounds of heightmap or assume standard 1280x1280 world.
+        # Actually, we should probably know the world size from the app.
+        # For now, let's assume the points are local to the 0-1280 range 
+        # which is common for BZ maps.
+        
+        # Scaling: BZ Maps are typically 1280m x 1280m or 640m x 640m.
+        # HG2s are 128x128 or 64x64 or 256x256.
+        # Let's assume the heightmap represents the full world.
+        
+        # Determine world bounds if possible, or use fixed 1280.0
+        world_size = 1280.0 # Standard BZ world size
+        
+        img = Image.new('L', (w, h), 0)
+        draw = ImageDraw.Draw(img)
+        
+        # Map world (X, Z) to (row, col)
+        # X -> col (0 to w)
+        # Z -> row (0 to h) - note: Z increases "down" in some BZ contexts? 
+        # In BZ, Z is North. In Screen, Y is Down.
+        
+        poly = []
+        for (x, z) in pts:
+            px = (x / world_size) * w
+            pz = (1.0 - (z / world_size)) * h # Invert Z for screen space? 
+            # Actually, let's just use (x, z) relative mapping.
+            poly.append((px, pz))
+            
+        if target_path['type'] == 3: # Loop
+            draw.polygon(poly, fill=255)
+        else:
+            draw.line(poly, fill=255, width=4) # Thickness heuristic
+            
+        return np.array(img) > 127
+
+    @staticmethod
+    def generate_mat(height_data, rules, progress_callback=None, bzn_paths=None):
         """
         height_data: 2D numpy array (H, W)
         rules: List of dicts [{'mat_id': int, 'min_h': float, 'max_h': float, 'min_s': float, 'max_s': float}]
@@ -159,8 +442,28 @@ class AutoPainter:
             min_h, max_h = rule['min_h'], rule['max_h']
             min_s, max_s = rule['min_s'], rule['max_s']
             
+            # Evaluate Mask
             mask = (height_data >= min_h) & (height_data <= max_h) & \
                    (slope_map >= min_s) & (slope_map <= max_s)
+            
+            # Apply Image/Path Mask
+            if rule.get('mask_path'):
+                m_path = rule['mask_path']
+                if m_path.startswith("PATH:") and bzn_paths:
+                    # Path-based mask
+                    path_label = m_path[5:]
+                    mask &= AutoPainter.rasterize_path_mask(h, w, bzn_paths, path_label)
+                elif os.path.exists(m_path):
+                    # Image-based mask
+                    try:
+                        mask_img = Image.open(m_path).convert("L")
+                        if mask_img.size != (w, h):
+                            mask_img = mask_img.resize((w, h), Image.Resampling.BILINEAR)
+                        mask_arr = np.array(mask_img)
+                        mask &= (mask_arr > 127) # Threshold
+                    except Exception as e:
+                        print(f"Mask Load Error: {e}")
+
             vertex_mats[mask] = mat_id
             
         # 2. Generate Tiles (Marching Squares)
@@ -482,7 +785,8 @@ class BZ98TRNArchitect:
 # Use self. to make it an instance attribute
         self.map_presets = [
             "Tiny (1280m)", "Small (2560m)", "Medium (5120m)", 
-            "Large (10240m)", "Huge (20480m)", "Custom"
+            "Large (10240m)", "Huge (20480m)", "Custom",
+            "World Machine (1024m)", "World Machine (2048m)"
         ]
         
         self.selected_preset = tk.StringVar(value=self.map_presets[2]) # Defaults to Medium
@@ -773,19 +1077,27 @@ class BZ98TRNArchitect:
         self.ap_max_s.pack(side="left")
         self.ap_max_s.insert(0, "90")
         
+        ttk.Label(r_frame, text="Mask:").pack(side="left", padx=5)
+        self.ap_mask_path = ttk.Entry(r_frame, width=15)
+        self.ap_mask_path.pack(side="left")
+        ttk.Button(r_frame, text="...", command=self.browse_ap_mask, width=3).pack(side="left", padx=2)
+        
         ttk.Button(r_frame, text="Add/Update Rule", command=self.add_paint_rule).pack(side="left", padx=10)
         
         # Rules List
         list_frame = ttk.Frame(self.tab_paint)
         list_frame.pack(fill="both", expand=True, padx=5, pady=5)
         
-        cols = ("ID", "Height", "Slope")
+        cols = ("ID", "Height", "Slope", "Mask")
         self.rules_tree = ttk.Treeview(list_frame, columns=cols, show="headings", height=8)
         
         # Sort logic: click header to sort
         self.rules_tree.heading("ID", text="Mat ID", command=lambda: self.sort_paint_rules("mat_id"))
         self.rules_tree.heading("Height", text="Elevation Range", command=lambda: self.sort_paint_rules("min_h"))
         self.rules_tree.heading("Slope", text="Slope Range", command=lambda: self.sort_paint_rules("min_s"))
+        self.rules_tree.heading("Mask", text="Image Mask", command=lambda: self.sort_paint_rules("mask_path"))
+        
+        self.rules_tree.column("Mask", width=150)
         
         self.rules_tree.pack(side="left", fill="both", expand=True)
         
@@ -798,11 +1110,12 @@ class BZ98TRNArchitect:
         ttk.Button(btn_frame, text="Auto-Balance", command=self.auto_balance_rules).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Validate", command=self.validate_rules).pack(side="left", padx=2)
         
-        ttk.Button(btn_frame, text="Clear", command=self.clear_paint_rules).pack(side="left", padx=2)
+        ttk.Button(btn_frame, text="Load BZN Paths...", command=self.load_bzn_paths).pack(side="left", padx=2)
         ttk.Button(btn_frame, text="Generate .MAT...", command=self.run_auto_painter).pack(side="right", padx=2)
         
         # Store rules
         self.paint_rules = []
+        self.bzn_paths = []
         self.sort_descending = False
 
     def sort_paint_rules(self, key):
@@ -817,16 +1130,51 @@ class BZ98TRNArchitect:
             maxh = float(self.ap_max_h.get())
             mins = float(self.ap_min_s.get())
             maxs = float(self.ap_max_s.get())
+            mpath = self.ap_mask_path.get()
             
             rule = {
                 'mat_id': mid,
                 'min_h': minh, 'max_h': maxh,
-                'min_s': mins, 'max_s': maxs
+                'min_s': mins, 'max_s': maxs,
+                'mask_path': mpath
             }
             self.paint_rules.append(rule)
             self.refresh_rules_list()
+            # Clear fields
+            self.ap_mask_path.delete(0, 'end')
         except ValueError:
             messagebox.showerror("Error", "Invalid numeric values")
+            
+    def load_bzn_paths(self):
+        path = filedialog.askopenfilename(filetypes=[("Battlezone Mission", "*.bzn"), ("All Files", "*.*")])
+        if not path:
+            return
+            
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            
+            parser = BinaryBZNParser(data)
+            paths = parser.load()
+            
+            if not paths:
+                # Attempt heuristic scan if structured load failed
+                paths = parser.scan_for_paths()
+                
+            if paths:
+                self.bzn_paths = paths
+                messagebox.showinfo("BZN Loaded", f"Loaded {len(paths)} paths from {os.path.basename(path)}.\n\nYou can now use 'PATH:Label' in the Mask field.")
+            else:
+                messagebox.showwarning("BZN Warning", "No paths found in BZN file. It might be an ASCII BZN or a different version.")
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load BZN: {e}")
+
+    def browse_ap_mask(self):
+        path = filedialog.askopenfilename(filetypes=[("Mask Image", "*.png *.bmp *.jpg *.tga"), ("All Files", "*.*")])
+        if path:
+            self.ap_mask_path.delete(0, 'end')
+            self.ap_mask_path.insert(0, path)
             
     def clear_paint_rules(self):
         self.paint_rules = []
@@ -836,10 +1184,12 @@ class BZ98TRNArchitect:
         for i in self.rules_tree.get_children():
             self.rules_tree.delete(i)
         for r in self.paint_rules:
+            m_name = os.path.basename(r.get('mask_path', ''))
             self.rules_tree.insert("", "end", values=(
                 r['mat_id'], 
                 f"{r['min_h']} - {r['max_h']}",
-                f"{r['min_s']} - {r['max_s']}"
+                f"{r['min_s']} - {r['max_s']}",
+                m_name if m_name else "None"
             ))
             
     def run_auto_painter(self):
@@ -859,7 +1209,7 @@ class BZ98TRNArchitect:
                 arr = (arr / 65535.0) * 4095.0
             
             # Run Painter
-            mat_data = AutoPainter.generate_mat(arr, self.paint_rules)
+            mat_data = AutoPainter.generate_mat(arr, self.paint_rules, bzn_paths=self.bzn_paths)
             
             # Save
             save_path = filedialog.asksaveasfilename(defaultextension=".mat", filetypes=[("Material Map", "*.mat")])
@@ -914,11 +1264,13 @@ class BZ98TRNArchitect:
                             max_h = float(config.get(section, "ElevationEnd"))
                             min_s = float(config.get(section, "SlopeStart"))
                             max_s = float(config.get(section, "SlopeEnd"))
+                            mask_path = config.get(section, "MaskPath") if config.has_option(section, "MaskPath") else ""
                             
                             new_rules.append({
                                 'mat_id': mat_id,
                                 'min_h': min_h, 'max_h': max_h,
-                                'min_s': min_s, 'max_s': max_s
+                                'min_s': min_s, 'max_s': max_s,
+                                'mask_path': mask_path
                             })
                         except Exception as e:
                             print(f"Skipping section {section}: {e}")
@@ -943,7 +1295,10 @@ class BZ98TRNArchitect:
                     f.write(f"ElevationEnd   = {rule['max_h']}\n")
                     f.write(f"SlopeStart     = {rule['min_s']}\n")
                     f.write(f"SlopeEnd       = {rule['max_s']}\n")
-                    f.write(f"Material       = {rule['mat_id']}\n\n")
+                    f.write(f"Material       = {rule['mat_id']}\n")
+                    if rule.get('mask_path'):
+                        f.write(f"MaskPath       = {rule['mask_path']}\n")
+                    f.write("\n")
             messagebox.showinfo("Success", "Rules saved.")
         except Exception as e:
             messagebox.showerror("Error", f"Failed to save: {e}")
@@ -997,13 +1352,13 @@ class BZ98TRNArchitect:
         self.refresh_rules_list()
         messagebox.showinfo("Auto-Balance", f"Balanced {count} rules across 0-{max_h}m.")
 
-    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s):
+    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s, mask_path=""): 
         self.paint_rules.append({
             "mat_id": mat_id,
             "min_h": float(min_h),
             "max_h": float(max_h),
             "min_s": float(min_s),
-            "max_s": float(max_s)
+            "max_s": float(max_s), "mask_path": mask_path
         })
         self.refresh_rules_list()
 
@@ -1059,6 +1414,59 @@ class BZ98TRNArchitect:
             messagebox.showerror("Error", str(e))
         except Exception as e:
             messagebox.showerror("Error", f"Failed to parse BZN: {e}")
+
+    def rapid_import_wm(self):
+        dir_path = filedialog.askdirectory(title="Select World Machine Project Output Folder")
+        if not dir_path:
+            return
+            
+        # Common filenames
+        files = {
+            "height": ["Heightmap.png", "Height.png", "output.png"],
+            "flow": ["Flow.png", "erosion_flow.png"],
+            "slope": ["Slopes.png", "Slope.png", "erosion_slope.png"]
+        }
+        
+        found = {}
+        for key, aliases in files.items():
+            for alias in aliases:
+                p = os.path.join(dir_path, alias)
+                if os.path.exists(p):
+                    found[key] = p
+                    break
+                    
+        if not found.get("height"):
+            messagebox.showerror("By the Beard!", "Could not find a heightmap (Heightmap.png) in this folder.")
+            return
+            
+        # 1. Set HG2 Path
+        self.hg2_path.set(found["height"])
+        self.update_hg2_preview()
+        
+        # 2. Setup Auto-Painter Rules
+        msg = f"Found:\n- Height: {os.path.basename(found['height'])}\n"
+        if found.get('flow'): msg += f"- Flow: {os.path.basename(found['flow'])}\n"
+        if found.get('slope'): msg += f"- Slope: {os.path.basename(found['slope'])}\n"
+        msg += "\nAuto-populate paint rules based on these masks?"
+        
+        if messagebox.askyesno("Rapid Import", msg):
+            self.clear_paint_rules()
+            
+            # Rule 1: Dirt/Base (Low slope)
+            self.add_paint_rule_internal(0, 0, 4095, 0, 35)
+            
+            # Rule 2: Rock (High slope)
+            if found.get("slope"):
+                self.add_paint_rule_internal(1, 0, 4095, 30, 90, mask_path=found["slope"])
+            else:
+                 self.add_paint_rule_internal(1, 0, 4095, 30, 90)
+                 
+            # Rule 3: Flow/Grass (Using Flow mask)
+            if found.get("flow"):
+                self.add_paint_rule_internal(2, 0, 4095, 0, 90, mask_path=found["flow"])
+                
+            self.notebook.select(self.tab_paint)
+            messagebox.showinfo("Success", "World Machine project imported. Rules populated in Auto-Painter.")
 
 
 
@@ -1946,9 +2354,12 @@ class BZ98TRNArchitect:
         self.btn_hg2_png = ttk.Button(hg2_btn_frame, text="HG2 -> PNG", style="Action.TButton",
                   command=self.convert_hg2_to_png)
         self.btn_hg2_png.pack(side="left", expand=True, fill="x", padx=(0,2))
-        self.btn_png_hg2 = ttk.Button(hg2_btn_frame, text="PNG -> HG2", style="Action.TButton",
-                  command=self.convert_png_to_hg2)
         self.btn_png_hg2.pack(side="left", expand=True, fill="x", padx=(2,0))
+        
+        wm_frame = ttk.LabelFrame(left_panel, text=" World Machine Workflow ", padding=10)
+        wm_frame.pack(fill="x", pady=10)
+        ttk.Label(wm_frame, text="Automate importing height, flow,\nand slope maps into the Auto-Painter.", font=(self.custom_font_name, 8, "italic")).pack(pady=2)
+        ttk.Button(wm_frame, text="⚡ Rapid Import Project...", command=self.rapid_import_wm).pack(fill="x", pady=5)
 
         # --- RIGHT PANEL: HG2 PREVIEW ---
         right_panel = ttk.LabelFrame(container, text=" Heightmap Preview ")
@@ -3068,13 +3479,13 @@ class BZ98TRNArchitect:
         self.refresh_rules_list()
         messagebox.showinfo("Auto-Balance", f"Balanced {count} rules across 0-{max_h}m.")
 
-    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s):
+    def add_paint_rule_internal(self, mat_id, min_h, max_h, min_s, max_s, mask_path=""): 
         self.paint_rules.append({
             "mat_id": mat_id,
             "min_h": float(min_h),
             "max_h": float(max_h),
             "min_s": float(min_s),
-            "max_s": float(max_s)
+            "max_s": float(max_s), "mask_path": mask_path
         })
         self.refresh_rules_list()
 
