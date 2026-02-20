@@ -58,20 +58,37 @@ jobs:
       run: |
         sudo apt-get install -y libjpeg-dev libpng-dev
     
-    - name: Build with PyInstaller (Linux/macOS)
-      if: runner.os != 'Windows'
+    - name: Build with PyInstaller (Linux)
+      if: runner.os == 'Linux'
       run: |
-        pyinstaller --onefile --windowed \
+        pyinstaller --onefile \
           --icon=wb.ico \
           --name=world_builder \
           --add-data="world_builder_config.json:." \
           --add-data="BZONE.ttf:." \
           world_builder.py
     
+    - name: Build with PyInstaller (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        pyinstaller --onedir \
+          --icon=wb.ico \
+          --name=world_builder \
+          --add-data="world_builder_config.json:." \
+          --add-data="BZONE.ttf:." \
+          world_builder.py
+        # Create a wrapper script executable
+        cat > dist/world_builder_app << 'EOF'
+        #!/bin/bash
+        "$(dirname "$0")"/world_builder.app/Contents/MacOS/world_builder
+        EOF
+        chmod +x dist/world_builder_app
+        mv dist/world_builder_app dist/world_builder
+    
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --onefile --windowed --icon=wb.ico --name=world_builder --add-data="world_builder_config.json;." --add-data="BZONE.ttf;." world_builder.py
+        pyinstaller --onefile --icon=wb.ico --name=world_builder --add-data="world_builder_config.json;." --add-data="BZONE.ttf;." world_builder.py
     
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
