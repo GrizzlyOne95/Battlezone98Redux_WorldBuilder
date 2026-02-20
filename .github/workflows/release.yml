@@ -64,7 +64,6 @@ jobs:
         pyinstaller --onefile \
           --icon=wb.ico \
           --name=world_builder \
-          --add-data="world_builder_config.json:." \
           --add-data="BZONE.ttf:." \
           world_builder.py
     
@@ -74,7 +73,6 @@ jobs:
         pyinstaller --onedir \
           --icon=wb.ico \
           --name=world_builder \
-          --add-data="world_builder_config.json:." \
           --add-data="BZONE.ttf:." \
           world_builder.py
         # Create a wrapper script executable
@@ -88,7 +86,7 @@ jobs:
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --onefile --icon=wb.ico --name=world_builder --add-data="world_builder_config.json;." --add-data="BZONE.ttf;." world_builder.py
+        pyinstaller --onefile --icon=wb.ico --name=world_builder --add-data="BZONE.ttf;." world_builder.py
     
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
