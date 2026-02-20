@@ -12,14 +12,12 @@ on:
 
 permissions:
   contents: write
-  releases: write
 
 jobs:
   build-and-release:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
-      releases: write
     strategy:
       matrix:
         include:
