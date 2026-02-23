@@ -1,5 +1,10 @@
 # Battlezone98Redux_WorldBuilder
-A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2 conversion, and more
+A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2/HGT conversion, and more
+
+## HG2/HGT Tools
+- HG2 ↔ PNG conversion (lossless 16-bit) and HG2IMG legacy PNG compatibility (8-bit RG, flipped)
+- HGT import/export (legacy pre-HG2 format)
+- Optional TRN-based size detection for HGT (Width/Depth ÷ 1280)
 
 <img width="1402" height="982" alt="image" src="https://github.com/user-attachments/assets/34362a26-e3cd-41b5-a43a-15c8829e393b" />
 

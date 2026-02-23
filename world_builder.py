@@ -612,6 +612,7 @@ class TRNParser:
     def parse(path):
         data = {
             "MinX": 0.0, "MinZ": 0.0, "MaterialName": None,
+            "Width": None, "Depth": None,
             "TextureTypes": [] # List of found IDs
         }
         if not os.path.exists(path):
@@ -650,6 +651,12 @@ class TRNParser:
                             data["MinX"] = float(val)
                         elif key.lower() == "minz":
                             data["MinZ"] = float(val)
+                        elif key.lower() == "width":
+                            try: data["Width"] = float(val)
+                            except: pass
+                        elif key.lower() == "depth":
+                            try: data["Depth"] = float(val)
+                            except: pass
                         elif key.lower() == "materialname":
                             data["MaterialName"] = val
                             
@@ -823,6 +830,9 @@ class BZ98TRNArchitect:
         self.hg2_brightness = tk.DoubleVar(value=1.0)
         self.hg2_contrast = tk.DoubleVar(value=1.0)
         self.hg2_smooth_val = tk.IntVar(value=0)
+        self.hg2img_compat = tk.BooleanVar(value=self.config.get("hg2img_compat", True))
+        self.hg2img_precision = tk.BooleanVar(value=self.config.get("hg2img_precision", True))
+        self.hgt_output = tk.BooleanVar(value=self.config.get("hgt_output", False))
         
         # Legacy Atlas Variables
         self.legacy_source_dir = tk.StringVar()
@@ -928,7 +938,10 @@ class BZ98TRNArchitect:
             "exp_dds": self.exp_dds.get(),
             "exp_mat": self.exp_mat.get(),
             "exp_trn": self.exp_trn.get(),
-            "exp_normal": self.exp_normal.get()
+            "exp_normal": self.exp_normal.get(),
+            "hg2img_compat": self.hg2img_compat.get(),
+            "hg2img_precision": self.hg2img_precision.get(),
+            "hgt_output": self.hgt_output.get()
         }
         with open(CONFIG_FILE, 'w') as f:
             json.dump(cfg, f, indent=4)
@@ -1363,7 +1376,7 @@ class BZ98TRNArchitect:
         self.refresh_rules_list()
 
     def browse_hg2(self):
-        path = filedialog.askopenfilename(filetypes=[("Heightmaps", "*.hg2 *.png *.bmp")])
+        path = filedialog.askopenfilename(filetypes=[("Heightmaps", "*.hg2 *.hgt *.png *.bmp")])
         if path:
             self.hg2_path.set(path)
             # Auto-detect dimensions if it's an HG2
@@ -1374,6 +1387,18 @@ class BZ98TRNArchitect:
                         _, _, z_w, z_l, _, _ = struct.unpack("<HHHHHH", header)
                         self.hg2_target_zw.set(z_w)
                         self.hg2_target_zl.set(z_l)
+                except:
+                    pass
+            elif path.lower().endswith(".hgt"):
+                try:
+                    trn_path = os.path.splitext(path)[0] + ".trn"
+                    trn = TRNParser.parse(trn_path)
+                    if trn.get("Width") and trn.get("Depth"):
+                        zw = int(round(trn["Width"] / 1280.0))
+                        zl = int(round(trn["Depth"] / 1280.0))
+                        if zw > 0 and zl > 0:
+                            self.hg2_target_zw.set(zw)
+                            self.hg2_target_zl.set(zl)
                 except:
                     pass
             # Trigger preview update after selection
@@ -1479,14 +1504,47 @@ class BZ98TRNArchitect:
         
         self.btn_hg2_png.config(text="CONVERTING...", state="disabled")
         try:
-            with open(path, "rb") as f:
-                header = f.read(12)
-                f_v, depth, z_w, z_l, f_r, _ = struct.unpack("<HHHHHH", header)
+            if path.lower().endswith(".hg2"):
+                with open(path, "rb") as f:
+                    header = f.read(12)
+                    _, depth, z_w, z_l, _, _ = struct.unpack("<HHHHHH", header)
+                    
+                    zone_size = 2**depth
+                    full_w, full_h = z_w * zone_size, z_l * zone_size
+                    
+                    raw_data = np.frombuffer(f.read(), dtype=np.uint16)
+                    img_array = np.zeros((full_h, full_w), dtype=np.uint16)
+                    
+                    idx = 0
+                    for zy in range(z_l):
+                        for zx in range(z_w):
+                            start_x, start_y = zx * zone_size, zy * zone_size
+                            zone_data = raw_data[idx : idx + (zone_size * zone_size)]
+                            if zone_data.size == (zone_size * zone_size):
+                                img_array[start_y:start_y+zone_size, start_x:start_x+zone_size] = \
+                                    zone_data.reshape((zone_size, zone_size))
+                            idx += (zone_size * zone_size)
+            elif path.lower().endswith(".hgt"):
+                zone_size = 128
+                z_w = self.hg2_target_zw.get()
+                z_l = self.hg2_target_zl.get()
                 
-                zone_size = 2**depth
+                trn_path = os.path.splitext(path)[0] + ".trn"
+                trn = TRNParser.parse(trn_path)
+                if trn.get("Width") and trn.get("Depth"):
+                    zw = int(round(trn["Width"] / 1280.0))
+                    zl = int(round(trn["Depth"] / 1280.0))
+                    if zw > 0 and zl > 0:
+                        z_w, z_l = zw, zl
+                
+                with open(path, "rb") as f:
+                    raw_data = np.frombuffer(f.read(), dtype=np.uint16)
+                
+                expected = z_w * z_l * zone_size * zone_size
+                if raw_data.size != expected:
+                    raise ValueError(f"Invalid HGT size. Expected {expected} entries, got {raw_data.size}.")
+                
                 full_w, full_h = z_w * zone_size, z_l * zone_size
-                
-                raw_data = np.frombuffer(f.read(), dtype=np.uint16)
                 img_array = np.zeros((full_h, full_w), dtype=np.uint16)
                 
                 idx = 0
@@ -1498,21 +1556,36 @@ class BZ98TRNArchitect:
                             img_array[start_y:start_y+zone_size, start_x:start_x+zone_size] = \
                                 zone_data.reshape((zone_size, zone_size))
                         idx += (zone_size * zone_size)
+            else:
+                raise ValueError("Unsupported input format for HG2/HGT conversion.")
 
-                # Visibility Normalization
-                v_min, v_max = img_array.min(), img_array.max()
-                if v_max > v_min:
-                    norm_data = (img_array.astype(np.float32) - v_min) / (v_max - v_min)
-                    img_array = (norm_data * 65535).astype(np.uint16)
-
-                out_path = path.replace(".hg2", "_edit.png")
-                out_img = Image.fromarray(img_array).convert("I;16")
-
-                # --- APPLY 90 DEGREE CCW ROTATION ---
-                out_img = out_img.transpose(Image.ROTATE_90)
-
+            out_path = os.path.splitext(path)[0] + "_edit.png"
+            
+            if self.hg2img_compat.get():
+                # HG2IMG legacy mode: 12-bit heights in RG, vertical flip
+                h = (img_array & 0x0FFF).astype(np.uint16)
+                h = np.flipud(h)
+                g = (h >> 4).astype(np.uint8)
+                if self.hg2img_precision.get():
+                    r = (h & 0x0F).astype(np.uint8)
+                else:
+                    r = np.zeros_like(g, dtype=np.uint8)
+                b = np.zeros_like(g, dtype=np.uint8)
+                a = np.full_like(g, 255, dtype=np.uint8)
+                out_img = Image.fromarray(np.dstack([r, g, b, a]), mode="RGBA")
                 out_img.save(out_path)
-                self.log(f"Success: Converted & Rotated 90° CCW ({out_img.width}x{out_img.height})", "success")
+                self.log(f"Success: Converted (HG2IMG legacy) ({out_img.width}x{out_img.height})", "success")
+            else:
+                # Lossless 16-bit PNG
+                if path.lower().endswith(".hg2"):
+                    img_array = (img_array & 0x1FFF).astype(np.uint16)
+                    img_array = (np.clip(img_array, 0, 8191).astype(np.uint32) * 8).astype(np.uint16)
+                else:
+                    img_array = (img_array & 0x0FFF).astype(np.uint16)
+                    img_array = (np.clip(img_array, 0, 4095).astype(np.uint32) * 16).astype(np.uint16)
+                out_img = Image.fromarray(img_array).convert("I;16")
+                out_img.save(out_path)
+                self.log(f"Success: Converted ({out_img.width}x{out_img.height})", "success")
         except Exception as e:
             self.log(f"Error: Conversion failed: {e}", "error")
         finally:
@@ -1535,8 +1608,9 @@ class BZ98TRNArchitect:
 
     def _convert_png_to_hg2_worker(self, cfg):
         try:
-            # 1. Load the 16-bit PNG
-            img = Image.open(cfg["path"]).convert("I;16")
+            # 1. Load the PNG
+            img = Image.open(cfg["path"])
+            img_mode = img.mode
             
             # 2. Dynamic Dimensions Calculation
             z_w = cfg["zw"]
@@ -1544,59 +1618,116 @@ class BZ98TRNArchitect:
             
             # Calculate zone_size based on image width and number of zones
             # This prevents the 512 -> 2048 scaling issue
-            zone_size = img.width // z_w 
+            if z_w <= 0 or z_l <= 0:
+                raise ValueError("Invalid zone dimensions.")
+            if img.width % z_w != 0 or img.height % z_l != 0:
+                raise ValueError("Image size is not divisible by zone dimensions.")
+            zone_size = img.width // z_w
+            if zone_size != (img.height // z_l):
+                raise ValueError("Non-square zones detected. Check image size and zone dimensions.")
             
             # Determine depth for the HG2 header (2^depth = zone_size)
             # e.g., 64px = depth 6, 128px = depth 7, 256px = depth 8
             depth = int(math.log2(zone_size))
+            if 2**depth != zone_size:
+                raise ValueError("Zone size must be a power of two.")
             
-            # 3. Rotate BACK (90° CW)
-            img = img.transpose(Image.ROTATE_270)
-            
-            # 4. Apply Adjusters (Brightness/Contrast/Smoothing)
-            arr = np.array(img).astype(np.float32)
-            arr *= cfg["brightness"]
-            mean = 32768.0
-            arr = (arr - mean) * cfg["contrast"] + mean
-            
-            # Smoothing fix for Pillow mode compatibility
-            if cfg["smooth"] > 0:
-                img_proc = Image.fromarray((arr / 256).astype(np.uint8)).convert("RGB")
-                img_proc = img_proc.filter(ImageFilter.GaussianBlur(cfg["smooth"]))
-                img_final_arr = np.array(img_proc.convert("L")).astype(np.float32) * 256
-            else:
-                img_final_arr = arr
+            legacy_png = self.hg2img_compat.get() and img_mode not in ("I;16", "I;16B", "I;16L", "I")
 
-            # 5. Scale to 12-bit (0-4095) and Mask
-            # The BZ98R spec uses 12 bits for height (0-4095) and 4 bits for flags.
-            # We must scale the 16-bit input (0-65535) down to 0-4095.
-            img_final_arr = (img_final_arr / 65535.0) * 4095.0
-            img_final_arr = np.clip(img_final_arr, 0, 4095).astype(np.uint16)
-            
+            if legacy_png:
+                # HG2IMG legacy PNG: 8-bit RG, vertically flipped
+                img = img.convert("RGBA")
+                arr = np.array(img).astype(np.uint8)
+                r = arr[..., 0].astype(np.uint16)
+                g = arr[..., 1].astype(np.uint16)
+                use_precision = self.hg2img_precision.get()
+                if use_precision and r.max() > 15:
+                    self.log("HG2IMG precision disabled: R channel exceeds 0-15 (treating as green-only).", "warn")
+                    use_precision = False
+                if use_precision:
+                    h = (g << 4) | (r & 0x0F)
+                else:
+                    h = (g << 4)
+                h = np.flipud(h)
+                
+                # Apply adjusters in 16-bit space for consistency
+                arr16 = (h.astype(np.float32) * 16.0)  # 0-65520
+                arr16 *= cfg["brightness"]
+                mean = 32768.0
+                arr16 = (arr16 - mean) * cfg["contrast"] + mean
+                
+                if cfg["smooth"] > 0:
+                    img_proc = Image.fromarray((arr16 / 256).astype(np.uint8)).convert("RGB")
+                    img_proc = img_proc.filter(ImageFilter.GaussianBlur(cfg["smooth"]))
+                    arr16 = np.array(img_proc.convert("L")).astype(np.float32) * 256
+                
+                img_final_arr = np.clip((arr16 / 16.0), 0, 4095).astype(np.uint16)
+                img_final_arr = img_final_arr & 0x0FFF
+            else:
+                # Lossless 16-bit PNG
+                img = img.convert("I;16")
+                arr = np.array(img).astype(np.float32)
+                arr *= cfg["brightness"]
+                mean = 32768.0
+                arr = (arr - mean) * cfg["contrast"] + mean
+                
+                # Smoothing fix for Pillow mode compatibility
+                if cfg["smooth"] > 0:
+                    img_proc = Image.fromarray((arr / 256).astype(np.uint8)).convert("RGB")
+                    img_proc = img_proc.filter(ImageFilter.GaussianBlur(cfg["smooth"]))
+                    img_final_arr = np.array(img_proc.convert("L")).astype(np.float32) * 256
+                else:
+                    img_final_arr = arr
+
+                # Scale to 13-bit (HG2) or 12-bit (HGT) and mask
+                if self.hgt_output.get():
+                    img_final_arr = (img_final_arr.astype(np.uint32) // 16)
+                    img_final_arr = np.clip(img_final_arr, 0, 4095).astype(np.uint16)
+                    img_final_arr = img_final_arr & 0x0FFF
+                else:
+                    img_final_arr = (img_final_arr.astype(np.uint32) // 8)
+                    img_final_arr = np.clip(img_final_arr, 0, 8191).astype(np.uint16)
+                    img_final_arr = img_final_arr & 0x1FFF
+
             h, w = img_final_arr.shape 
             
-            # 6. Construct 12-byte HG2 Header using the calculated depth
-            # Format: version, depth, width_zones, length_zones, map_version(low), map_version(high)/padding
-            # BZMapIO.py uses a 4-byte integer '10' for the last chunk.
-            # My previous code used 10 for the first 2 bytes and 0 for padding.
-            # struct.pack("<I") of 10 is b'\x0A\x00\x00\x00'
-            # struct.pack("<HH") of (10, 0) is b'\x0A\x00\x00\x00'
-            # So (10, 0) is identical to BZMapIO's implementation.
-            header = struct.pack("<HHHHHH", 1, depth, z_w, z_l, 10, 0)
-            
-            # 7. Pack data into zones
-            output_data = bytearray()
-            for zy in range(z_l):
-                for zx in range(z_w):
-                    zone = img_final_arr[zy*zone_size : (zy+1)*zone_size, zx*zone_size : (zx+1)*zone_size]
-                    output_data.extend(zone.tobytes())
-            
-            out_path = cfg["path"].rsplit('.', 1)[0] + "_export.hg2"
-            with open(out_path, "wb") as f:
-                f.write(header)
-                f.write(output_data)
-                    
-            self.log(f"Success: Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})", "success")
+            if self.hgt_output.get():
+                # HGT output: 128x128 zones, no header. Flags are zeroed.
+                if zone_size != 128:
+                    raise ValueError("HGT requires 128x128 zones. Adjust map size/preset.")
+                hgt_data = (img_final_arr & 0x0FFF).astype(np.uint16)
+                output_data = bytearray()
+                for zy in range(z_l):
+                    for zx in range(z_w):
+                        zone = hgt_data[zy*zone_size : (zy+1)*zone_size, zx*zone_size : (zx+1)*zone_size]
+                        output_data.extend(zone.tobytes())
+                out_path = cfg["path"].rsplit('.', 1)[0] + "_export.hgt"
+                with open(out_path, "wb") as f:
+                    f.write(output_data)
+                self.log(f"Success: Exported {z_w}x{z_l} HGT", "success")
+            else:
+                # 6. Construct 12-byte HG2 Header using the calculated depth
+                # Format: version, depth, width_zones, length_zones, map_version(low), map_version(high)/padding
+                # BZMapIO.py uses a 4-byte integer '10' for the last chunk.
+                # My previous code used 10 for the first 2 bytes and 0 for padding.
+                # struct.pack("<I") of 10 is b'\x0A\x00\x00\x00'
+                # struct.pack("<HH") of (10, 0) is b'\x0A\x00\x00\x00'
+                # So (10, 0) is identical to BZMapIO's implementation.
+                header = struct.pack("<HHHHHH", 1, depth, z_w, z_l, 10, 0)
+                
+                # 7. Pack data into zones
+                output_data = bytearray()
+                for zy in range(z_l):
+                    for zx in range(z_w):
+                        zone = img_final_arr[zy*zone_size : (zy+1)*zone_size, zx*zone_size : (zx+1)*zone_size]
+                        output_data.extend(zone.tobytes())
+                
+                out_path = cfg["path"].rsplit('.', 1)[0] + "_export.hg2"
+                with open(out_path, "wb") as f:
+                    f.write(header)
+                    f.write(output_data)
+                        
+                self.log(f"Success: Exported {z_w}x{z_l} HG2 (Zone Size: {zone_size})", "success")
             
         except Exception as e:
             self.log(f"Error: Failed to save HG2: {e}", "error")
@@ -2348,12 +2479,18 @@ class BZ98TRNArchitect:
         self.create_hg2_slider(hg2_frame, "Brightness:", self.hg2_brightness, 0.1, 2.0, 0.1)
         self.create_hg2_slider(hg2_frame, "Contrast:", self.hg2_contrast, 0.1, 2.0, 0.1)
         self.create_hg2_slider(hg2_frame, "Smoothing:", self.hg2_smooth_val, 0, 10, 1)
+        
+        ttk.Checkbutton(hg2_frame, text="HG2IMG Legacy PNG (8-bit RG, flipped)", variable=self.hg2img_compat).pack(anchor="w", pady=(4, 0))
+        ttk.Checkbutton(hg2_frame, text="HG2IMG Precision (use R low bits)", variable=self.hg2img_precision).pack(anchor="w")
+        ttk.Checkbutton(hg2_frame, text="Output HGT (legacy format)", variable=self.hgt_output).pack(anchor="w")
 
         hg2_btn_frame = ttk.Frame(hg2_frame)
         hg2_btn_frame.pack(fill="x", pady=5)
         self.btn_hg2_png = ttk.Button(hg2_btn_frame, text="HG2 -> PNG", style="Action.TButton",
                   command=self.convert_hg2_to_png)
         self.btn_hg2_png.pack(side="left", expand=True, fill="x", padx=(0,2))
+        self.btn_png_hg2 = ttk.Button(hg2_btn_frame, text="PNG -> HG2", style="Action.TButton",
+                  command=self.convert_png_to_hg2)
         self.btn_png_hg2.pack(side="left", expand=True, fill="x", padx=(2,0))
         
         wm_frame = ttk.LabelFrame(left_panel, text=" World Machine Workflow ", padding=10)
@@ -2452,6 +2589,36 @@ class BZ98TRNArchitect:
                             zone_block = raw_data[idx:idx+zone_size].reshape((z_width, z_width))
                             arr[zy*z_width:(zy+1)*z_width, zx*z_width:(zx+1)*z_width] = zone_block
                             idx += zone_size
+            elif path.lower().endswith(".hgt"):
+                zone_size = 128
+                x_zones = self.hg2_target_zw.get()
+                z_zones = self.hg2_target_zl.get()
+                
+                # Try TRN if available
+                trn_path = os.path.splitext(path)[0] + ".trn"
+                trn = TRNParser.parse(trn_path)
+                if trn.get("Width") and trn.get("Depth"):
+                    zw = int(round(trn["Width"] / 1280.0))
+                    zl = int(round(trn["Depth"] / 1280.0))
+                    if zw > 0 and zl > 0:
+                        x_zones, z_zones = zw, zl
+                
+                with open(path, "rb") as f:
+                    raw_data = np.frombuffer(f.read(), dtype=np.uint16)
+                
+                expected = x_zones * z_zones * zone_size * zone_size
+                if raw_data.size != expected:
+                    raise ValueError(f"Invalid HGT size. Expected {expected} entries, got {raw_data.size}.")
+                
+                full_w, full_h = x_zones * zone_size, z_zones * zone_size
+                arr = np.zeros((full_h, full_w), dtype=np.float32)
+                
+                idx = 0
+                for zy in range(z_zones):
+                    for zx in range(x_zones):
+                        zone_block = raw_data[idx:idx+(zone_size*zone_size)].reshape((zone_size, zone_size))
+                        arr[zy*zone_size:(zy+1)*zone_size, zx*zone_size:(zx+1)*zone_size] = zone_block
+                        idx += zone_size * zone_size
             else:
                 img_input = Image.open(path).convert("I;16")
                 arr = np.array(img_input).astype(np.float32)
