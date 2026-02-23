@@ -22,17 +22,17 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: world-builder
+            artifact_name: world-builder-linux
             asset_name: world-builder-linux
-            asset_path: dist/world_builder
+            asset_path: dist/world-builder-linux
           - os: windows-latest
-            artifact_name: world-builder.exe
+            artifact_name: world-builder-windows.exe
             asset_name: world-builder-windows.exe
-            asset_path: dist/world_builder.exe
+            asset_path: dist/world-builder-windows.exe
           - os: macos-latest
-            artifact_name: world-builder
+            artifact_name: world-builder-macos
             asset_name: world-builder-macos
-            asset_path: dist/world_builder
+            asset_path: dist/world-builder-macos
 
     steps:
     - uses: actions/checkout@v3
@@ -63,7 +63,7 @@ jobs:
       run: |
         pyinstaller --onefile \
           --icon=wb.ico \
-          --name=world_builder \
+          --name=${{ matrix.asset_name }} \
           --add-data="BZONE.ttf:." \
           world_builder.py
     
@@ -81,12 +81,12 @@ jobs:
         "$(dirname "$0")"/world_builder.app/Contents/MacOS/world_builder
         EOF
         chmod +x dist/world_builder_app
-        mv dist/world_builder_app dist/world_builder
+        mv dist/world_builder_app ${{ matrix.asset_path }}
     
     - name: Build with PyInstaller (Windows)
       if: runner.os == 'Windows'
       run: |
-        pyinstaller --onefile --icon=wb.ico --name=world_builder --add-data="BZONE.ttf;." world_builder.py
+        pyinstaller --onefile --icon=wb.ico --name=${{ matrix.asset_name }} --add-data="BZONE.ttf;." world_builder.py
     
     - name: Upload Release Assets
       uses: softprops/action-gh-release@v1
