@@ -1937,10 +1937,12 @@ class BZ98TRNArchitect:
 
         # Map Name (Validated)
         ttk.Label(left_col, text="Map Name (Max 8 chars, Alpha only):").pack(anchor="w")
+        ttk.Label(left_col, text="Map Name (Max 8 chars, Alphanumeric):").pack(anchor="w")
         vcmd = (self.root.register(self.validate_map_name), '%P')
         entry_name = ttk.Entry(left_col, textvariable=self.stock_map_name, validate="key", validatecommand=vcmd)
         entry_name.pack(fill="x", pady=(0, 10))
         ToolTip(entry_name, "Internal name for the map (e.g., 'MULTI01'). Must be 8 letters or less.")
+        ToolTip(entry_name, "Internal name for the map (e.g., 'MULTI01'). Must be 8 characters or less (Letters/Numbers).")
 
         # World Type
         ttk.Label(left_col, text="World / Biome:").pack(anchor="w")
@@ -2237,6 +2239,7 @@ class BZ98TRNArchitect:
     def validate_map_name(self, P):
         if len(P) > 8: return False
         if not P.isalpha() and P != "": return False
+        if not P.isalnum() and P != "": return False
         return True
 
     def generate_stock_map(self):
