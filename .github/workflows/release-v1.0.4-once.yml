@@ -111,3 +111,5 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+# One-shot trigger revision 2.
