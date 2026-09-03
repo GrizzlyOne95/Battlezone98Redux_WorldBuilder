@@ -7,89 +7,119 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g., v1.0.0)'
+        description: 'Version to release (e.g. v1.0.4)'
         required: true
 
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+
 jobs:
-  build-and-release:
+  build:
+    name: Build ${{ matrix.platform }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: write
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            artifact_name: world-builder-linux
-            asset_name: world-builder-linux
-            asset_path: dist/world-builder-linux
-          - os: windows-latest
-            artifact_name: world-builder-windows.exe
-            asset_name: world-builder-windows.exe
-            asset_path: dist/world-builder-windows.exe
-          - os: macos-latest
-            artifact_name: world-builder-macos
-            asset_name: world-builder-macos
-            asset_path: dist/world-builder-macos
+          - platform: linux
+            os: ubuntu-latest
+            asset: world-builder-linux
+          - platform: windows
+            os: windows-latest
+            asset: world-builder-windows.exe
+          - platform: macos
+            os: macos-latest
+            asset: world-builder-macos.zip
 
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install system dependencies (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y python3-tk python3-dev python3-pip
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-    
-    - name: Install Python dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
-    
-    - name: Install PIL/Pillow optional dependencies (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get install -y libjpeg-dev libpng-dev
-    
-    - name: Build with PyInstaller (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        pyinstaller --onefile \
-          --icon=wb.ico \
-          --name=${{ matrix.asset_name }} \
-          --add-data="BZONE.ttf:." \
-          world_builder.py
-    
-    - name: Build with PyInstaller (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        pyinstaller --onedir \
-          --icon=wb.ico \
-          --name=world_builder \
-          --add-data="BZONE.ttf:." \
-          world_builder.py
-        # Create a wrapper script executable
-        cat > dist/world_builder_app << 'EOF'
-        #!/bin/bash
-        "$(dirname "$0")"/world_builder.app/Contents/MacOS/world_builder
-        EOF
-        chmod +x dist/world_builder_app
-        mv dist/world_builder_app ${{ matrix.asset_path }}
-    
-    - name: Build with PyInstaller (Windows)
-      if: runner.os == 'Windows'
-      run: |
-        pyinstaller --onefile --icon=wb.ico --name=${{ matrix.asset_name }} --add-data="BZONE.ttf;." world_builder.py
-    
-    - name: Upload Release Assets
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: ${{ matrix.asset_path }}
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-tk python3-dev libjpeg-dev libpng-dev
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Verify imports and syntax
+        run: |
+          python -m py_compile world_builder.py
+          python -c "import world_builder; print('Import successful')"
+
+      - name: Build Linux executable
+        if: runner.os == 'Linux'
+        run: |
+          pyinstaller --noconfirm --clean --onefile --name world-builder-linux --add-data="BZONE.ttf:." world_builder.py
+          test "$(stat -c%s dist/world-builder-linux)" -gt 1000000
+
+      - name: Build Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." world_builder.py
+          $asset = Get-Item .\dist\world-builder-windows.exe
+          if ($asset.Length -lt 1000000) { throw "Windows release asset is unexpectedly small: $($asset.Length) bytes" }
+
+      - name: Build and package macOS app
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --clean --onedir --windowed --name world_builder --add-data="BZONE.ttf:." world_builder.py
+          test -d dist/world_builder.app
+          ditto -c -k --sequesterRsrc --keepParent dist/world_builder.app dist/world-builder-macos.zip
+          test "$(stat -f%z dist/world-builder-macos.zip)" -gt 1000000
+
+      - name: Upload packaged asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-builder-${{ matrix.platform }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: Publish ${{ env.RELEASE_TAG }}
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download packaged assets
+        uses: actions/download-artifact@v4
+        with:
+          pattern: world-builder-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify release payload
+        run: |
+          ls -lh release-assets
+          test "$(stat -c%s release-assets/world-builder-linux)" -gt 1000000
+          test "$(stat -c%s release-assets/world-builder-windows.exe)" -gt 1000000
+          test "$(stat -c%s release-assets/world-builder-macos.zip)" -gt 1000000
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Release ${{ env.RELEASE_TAG }}
+          body_path: docs/RELEASE_NOTES_${{ env.RELEASE_TAG }}.md
+          files: release-assets/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
