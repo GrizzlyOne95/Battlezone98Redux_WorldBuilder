@@ -90,7 +90,7 @@ jobs:
           retention-days: 7
 
   release:
-    name: Publish ${{ env.RELEASE_TAG }}
+    name: Publish release
     needs: build
     runs-on: ubuntu-latest
     steps:
