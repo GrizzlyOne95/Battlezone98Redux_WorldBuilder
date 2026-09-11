@@ -2,6 +2,8 @@ import os
 import tempfile
 import unittest
 
+import numpy as np
+
 from hg2_codec import read_hg2
 from maketrn_compat import make_stock_geometry
 from mat_codec import default_make_trn_rules, expected_mat_bytes, read_mat
@@ -9,7 +11,7 @@ from stock_map_creator import StockBuildConfig, build_stock_map, build_stock_trn
 
 
 class StockMapCreatorTests(unittest.TestCase):
-    def make_config(self, out_dir, *, width=1280, depth=1280, empty=0, seed=1):
+    def make_config(self, out_dir, *, width=1280, depth=1280, empty=0, seed=1, **kwargs):
         return StockBuildConfig(
             name="TEST01",
             out_dir=out_dir,
@@ -27,6 +29,7 @@ class StockMapCreatorTests(unittest.TestCase):
             static_trn="[TextureType0]\nSolidA0=MN00SA0.MAP\n\n[TextureType3]\nSolidA0=MN33SA0.MAP",
             paint_rules=default_make_trn_rules(),
             legacy_seed=seed,
+            **kwargs,
         )
 
     def test_trn_uses_rectangular_dimensions_and_empty_height(self):
@@ -36,6 +39,12 @@ class StockMapCreatorTests(unittest.TestCase):
         self.assertIn("Depth=5120", text)
         self.assertIn("Height=123.400000", text)
         self.assertIn("Time=1100", text)
+
+    def test_trn_preserves_nonzero_msn_origin(self):
+        cfg = self.make_config("unused", min_x=3840, min_z=2560)
+        text = build_stock_trn_text(cfg)
+        self.assertIn("MinX=3840", text)
+        self.assertIn("MinZ=2560", text)
 
     def test_build_emits_all_three_stock_files_with_canonical_geometry(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -57,6 +66,21 @@ class StockMapCreatorTests(unittest.TestCase):
             result = build_stock_map(cfg)
             _, heights = read_hg2(result.hg2_path)
             self.assertTrue((heights == 1234).all())
+
+    def test_source_height_raster_replaces_blank_fill(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = np.full((256, 256), 100, dtype=np.uint16)
+            source[128, 128] = 250
+            cfg = self.make_config(folder, source_heights=source)
+            result = build_stock_map(cfg)
+            _, heights = read_hg2(result.hg2_path)
+            np.testing.assert_array_equal(heights, source)
+
+    def test_source_height_geometry_mismatch_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            cfg = self.make_config(folder, source_heights=np.zeros((128, 128), dtype=np.uint16))
+            with self.assertRaisesRegex(ValueError, "does not match terrain geometry"):
+                build_stock_map(cfg)
 
 
 if __name__ == '__main__':
