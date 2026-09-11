@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -16,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_type == 'tag' && github.ref_name || 'v1.0.8' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -121,7 +119,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: 4e87f9e384161ccbc063c9078ac19107b7c7719c
+          target_commitish: ${{ github.sha }}
           name: Release ${{ env.RELEASE_TAG }}
           body_path: docs/RELEASE_NOTES_${{ env.RELEASE_TAG }}.md
           files: release-assets/*
