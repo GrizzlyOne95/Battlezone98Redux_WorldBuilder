@@ -32,5 +32,5 @@ jobs:
     
     - name: Verify imports and syntax
       run: |
-        python -m py_compile world_builder.py world_builder_core.py hg2_codec.py
-        python -c "import world_builder; print('Import successful')"
+        python -m py_compile world_builder.py world_builder_core.py hg2_codec.py mat_codec.py bzpaint.py
+        python -c "import world_builder, bzpaint; print('Import successful')"
