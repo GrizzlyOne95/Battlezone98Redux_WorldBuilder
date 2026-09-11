@@ -1,6 +1,9 @@
+import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -9,10 +12,62 @@ from mission_visualizer import (
     extract_terrain_name,
     hg2_north_up,
     hg2_world_size,
+    is_binary_bzn,
+    parse_binary_bzn_overlay,
+    parse_mission_bzn,
     resolve_companion_hg2,
     resolve_mission_trn,
     world_to_canvas,
 )
+
+
+def _bzn_token(field_type, payload, *, high_byte=0):
+    raw_type = ((high_byte & 0xFF) << 8) | (field_type & 0xFF)
+    return struct.pack("<HH", raw_type, len(payload)) + payload
+
+
+def _binary_bzn_fixture(*, object_count=1):
+    prefix = (
+        b"version [1] =\r\n"
+        b"2016\r\n"
+        b"binarySave [1] =\r\n"
+        b"1\r\n"
+    )
+    data = bytearray(prefix)
+    data += _bzn_token(2, b"testmis\x00" + b"\x00" * 8)
+    data += _bzn_token(4, struct.pack("<i", 2))
+    data += _bzn_token(1, b"\x01")
+    # Non-zero upper type byte matches a known BZ1 quirk documented by BZNTools.
+    data += _bzn_token(2, b"MARS.TRN\x00" + b"\x00" * 91, high_byte=0xA7)
+    data += _bzn_token(4, struct.pack("<i", object_count))
+
+    if object_count:
+        # BZNTools documents binary ID fields as an 8-byte payload and BZ1
+        # GameObject labels as a 40-byte CHAR buffer.
+        data += _bzn_token(7, b"avrecy\x00\x00")
+        data += _bzn_token(3, struct.pack("<H", 17))
+        data += _bzn_token(9, struct.pack("<fff", 640.0, 12.5, 960.0))
+        data += _bzn_token(4, struct.pack("<I", 1))
+        data += _bzn_token(2, b"Recycler\x00" + b"\x00" * 31)
+        data += _bzn_token(4, struct.pack("<I", 0))
+        data += _bzn_token(8, struct.pack("<I", 0x12345678))
+        data += _bzn_token(11, struct.pack("<12f", *([0.0] * 12)))
+
+        # Class-specific payload: Mission Visualizer must safely skip this
+        # without knowing the object's ClassLabel-specific serialization.
+        data += _bzn_token(5, struct.pack("<f", 42.0))
+        data += _bzn_token(2, b"class-specific\x00")
+
+    # Tail contains one AI path using the exact BZ1/2016 schema:
+    # count, old_ptr, sized label, pointCount, points, pathType.
+    data += _bzn_token(4, struct.pack("<i", 1))
+    data += _bzn_token(8, struct.pack("<I", 0xDEADBEEF))
+    data += _bzn_token(4, struct.pack("<I", 5))
+    data += _bzn_token(2, b"route")
+    data += _bzn_token(4, struct.pack("<i", 2))
+    data += _bzn_token(10, struct.pack("<ffff", 100.0, 200.0, 300.0, 400.0))
+    data += _bzn_token(0, struct.pack("<I", 2))
+    return bytes(data)
 
 
 class MissionVisualizerTests(unittest.TestCase):
@@ -59,6 +114,78 @@ class MissionVisualizerTests(unittest.TestCase):
                 b"version [1] =\r\n2016\r\nTerrainName [1] =\r\nMARS.TRN\r\n"
             )
             self.assertEqual(extract_terrain_name(path), "MARS.TRN")
+            self.assertFalse(is_binary_bzn(path))
+
+    def test_extract_terrain_name_from_binary_bzn(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(_binary_bzn_fixture())
+            self.assertTrue(is_binary_bzn(path))
+            self.assertEqual(extract_terrain_name(path), "MARS.TRN")
+
+    def test_binary_overlay_extracts_objects_and_paths(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(_binary_bzn_fixture())
+
+            objects, paths = parse_binary_bzn_overlay(path)
+
+            self.assertEqual(len(objects), 1)
+            self.assertEqual(objects[0]["odf"], "avrecy")
+            self.assertEqual(objects[0]["label"], "Recycler")
+            self.assertEqual(objects[0]["seqno"], 17)
+            self.assertEqual(objects[0]["team"], 1)
+            self.assertEqual(objects[0]["pos"], (640.0, 12.5, 960.0))
+
+            self.assertEqual(len(paths), 1)
+            self.assertEqual(paths[0]["label"], "route")
+            self.assertEqual(paths[0]["type"], 2)
+            self.assertEqual(paths[0]["points"], [(100.0, 200.0), (300.0, 400.0)])
+
+    def test_binary_object_count_mismatch_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(_binary_bzn_fixture(object_count=2))
+            with self.assertRaisesRegex(ValueError, "header says 2"):
+                parse_binary_bzn_overlay(path)
+
+    def test_dispatch_preserves_existing_ascii_parser(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(b"version [1] =\r\n2016\r\nbinarySave [1] =\r\n0\r\n")
+            calls = []
+
+            def ascii_parser(selected_path):
+                calls.append(Path(selected_path))
+                return ([{"ascii": True}], [])
+
+            objects, paths = parse_mission_bzn(path, ascii_parser)
+            self.assertEqual(calls, [path])
+            self.assertEqual(objects, [{"ascii": True}])
+            self.assertEqual(paths, [])
+
+    def test_binary_terrain_read_bridges_world_builder_core_parser(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(_binary_bzn_fixture())
+
+            class DummyBZNParser:
+                @staticmethod
+                def parse(_path):
+                    raise AssertionError("binary mission reached the ASCII parser")
+
+            previous = sys.modules.get("world_builder_core")
+            sys.modules["world_builder_core"] = SimpleNamespace(BZNParser=DummyBZNParser)
+            try:
+                self.assertEqual(extract_terrain_name(path), "MARS.TRN")
+                objects, paths = DummyBZNParser.parse(path)
+                self.assertEqual(objects[0]["odf"], "avrecy")
+                self.assertEqual(paths[0]["label"], "route")
+            finally:
+                if previous is None:
+                    sys.modules.pop("world_builder_core", None)
+                else:
+                    sys.modules["world_builder_core"] = previous
 
     def test_resolve_trn_prefers_terrain_name_case_insensitively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -82,13 +209,6 @@ class MissionVisualizerTests(unittest.TestCase):
             hg2 = root / "Terrain.HG2"
             hg2.write_bytes(b"")
             self.assertEqual(resolve_companion_hg2(trn), hg2)
-
-    def test_binary_bzn_is_rejected(self):
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "mission.bzn"
-            path.write_bytes(b"version [1] =\r\n2016\r\n\x00binary")
-            with self.assertRaisesRegex(ValueError, "Binary BZN"):
-                extract_terrain_name(path)
 
 
 if __name__ == "__main__":
