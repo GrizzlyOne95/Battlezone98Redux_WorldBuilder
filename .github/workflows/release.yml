@@ -2,8 +2,6 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -16,7 +14,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_type == 'tag' && github.ref_name || 'v1.0.5' }}
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
 
 jobs:
   build:
@@ -111,7 +109,7 @@ jobs:
           ls -lh release-assets
           test "$(stat -c%s release-assets/world-builder-linux)" -gt 1000000
           test "$(stat -c%s release-assets/world-builder-windows.exe)" -gt 1000000
-          test "$(stat -c%s release-assets/world-builder-macos.zip)" -gt 1000000
+          test "$(stat -f%z release-assets/world-builder-macos.zip)" -gt 1000000
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
