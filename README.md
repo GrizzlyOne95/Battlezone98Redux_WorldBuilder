@@ -36,7 +36,35 @@ Experimental mission layout summarizer that loads the heightmap and BZN.
 
 
 ## Auto-Painter
-Lets you define painting rules for custom painting, and manually writes the MAT file. Full replacement for MakeTRN /p
+Lets you define painting rules for custom painting, and manually writes the MAT file. Full replacement for MakeTRN /p.
+
+The painter core is reverse-engineered from the historical MakeTRN executable and shared by both the GUI and the open-source `bzpaint.py` command-line frontend. It preserves MakeTRN's layer ordering, elevation/slope sampling, cap/diagonal synthesis, MAT layout, and MSVCR120 variant logic while adding deterministic output and diagnostics.
+
+Legacy-style usage:
+
+```powershell
+python bzpaint.py mapname.trn /p=moon.ini
+```
+
+`bzpaint.py` automatically loads `mapname.hg2` and writes `mapname.mat`. If `/p=` is omitted it uses the actual built-in MakeTRN defaults recovered from the executable.
+
+Modern options can be mixed with the legacy syntax:
+
+```powershell
+python bzpaint.py mapname.trn /p=moon.ini --seed 1 --dry-run
+python bzpaint.py mapname.trn --params moon.ini --output custom.mat --json
+python bzpaint.py mapname.trn /p=moon.ini /e=0
+```
+
+Useful options:
+
+- `--seed N` selects the deterministic MSVCR120-compatible texture-variant seed. The historical executable used `srand(clock())`; WorldBuilder defaults to `1` for reproducible builds.
+- `--dry-run` performs the complete paint and transition validation without writing a MAT.
+- `--json` prints machine-readable statistics and diagnostics.
+- `--output FILE` chooses a MAT path instead of replacing the TRN suffix with `.mat`.
+- `/e=N` or `--empty-elevation N` controls the legacy out-of-bounds EmptyElevation value.
+
+See [`docs/MAT_FORMAT_VALIDATION.md`](docs/MAT_FORMAT_VALIDATION.md) for the recovered format and MakeTRN behavior.
 
 <img width="1402" height="982" alt="python_1O4aYb26T2" src="https://github.com/user-attachments/assets/d91b2377-129a-46c3-9942-a8695927f0f4" />
 
