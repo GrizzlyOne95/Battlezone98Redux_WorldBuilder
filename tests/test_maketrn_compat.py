@@ -1,5 +1,7 @@
 import unittest
 
+import numpy as np
+
 import maketrn_compat
 
 
@@ -24,6 +26,29 @@ class MakeTRNCompatTests(unittest.TestCase):
 
     def test_stock_trn_height_matches_blank_create(self):
         self.assertAlmostEqual(maketrn_compat.stock_trn_height(1234), 123.4)
+
+    def test_hgt_triangle_upsample_half_sample_cases(self):
+        source = np.array([[0, 10], [20, 40]], dtype=np.uint16)
+        up = maketrn_compat.upsample_hgt_to_hg2(source)
+        expected = np.array(
+            [
+                [0, 5, 10, 10],
+                [10, 20, 25, 25],
+                [20, 30, 40, 40],
+                [20, 30, 40, 40],
+            ],
+            dtype=np.uint16,
+        )
+        np.testing.assert_array_equal(up, expected)
+
+    def test_hgt_zone_unpack_masks_12_bits_and_preserves_zone_order(self):
+        zone_samples = maketrn_compat.HGT_SAMPLES_PER_ZONE ** 2
+        left = np.full(zone_samples, 0xF123, dtype='<u2')
+        right = np.full(zone_samples, 0x0456, dtype='<u2')
+        raster = maketrn_compat.unpack_hgt_zones(left.tobytes() + right.tobytes(), 2, 1)
+        self.assertEqual(raster.shape, (128, 256))
+        self.assertTrue(np.all(raster[:, :128] == 0x0123))
+        self.assertTrue(np.all(raster[:, 128:] == 0x0456))
 
 
 if __name__ == '__main__':
