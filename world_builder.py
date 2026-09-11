@@ -14,6 +14,13 @@ from hg2_codec import (
     read_hg2_header,
     write_hg2,
 )
+from maketrn_compat import (
+    METERS_PER_ZONE,
+    make_stock_geometry,
+    make_trn_runtime_seed,
+    read_hgt_as_hg2,
+    validate_empty_elevation,
+)
 from mission_visualizer import (
     extract_terrain_name,
     hg2_north_up,
@@ -31,6 +38,7 @@ from mat_codec import (
     validate_paint_rules,
     write_mat,
 )
+from stock_map_creator import StockBuildConfig, build_stock_map
 
 
 _BaseArchitect = core.BZ98TRNArchitect
@@ -41,14 +49,107 @@ class BZ98TRNArchitect(_BaseArchitect):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+
         # The legacy binary's real built-in defaults are 0..15 degrees => Mat0
         # and 15..90 degrees => Mat3. The old CLI help incorrectly says 10.
         self.paint_rules = default_make_trn_rules()
         self.paint_trn_config = None
+
+        # MakeTRN /c compatibility controls. Blank width/depth means "use the
+        # selected WorldBuilder size preset". Runtime-random MAT variants match
+        # MakeTRN's srand(clock()); deterministic mode is a WorldBuilder extension.
+        self.stock_width_override = core.tk.StringVar(value="")
+        self.stock_depth_override = core.tk.StringVar(value="")
+        self.stock_empty_elevation = core.tk.IntVar(value=0)
+        self.stock_param_path = core.tk.StringVar(value="")
+        self.make_trn_deterministic_mat = core.tk.BooleanVar(value=False)
+        self._install_stock_make_trn_controls()
+
         try:
             self.refresh_rules_list()
         except Exception:
             pass
+
+    def _install_stock_make_trn_controls(self):
+        """Append the useful MakeTRN /w /h /e /p controls to Stock Map Creator."""
+        try:
+            containers = self.tab_stock.winfo_children()
+            if not containers:
+                return
+            columns = containers[0].winfo_children()
+            if not columns:
+                return
+            left_col = columns[0]
+
+            frame = core.ttk.LabelFrame(left_col, text=" MakeTRN Compatibility ", padding=8)
+            frame.pack(fill="x", pady=(10, 0))
+            core.ttk.Label(
+                frame,
+                text="Optional /w and /h overrides (meters):",
+                foreground=core.BZ_CYAN,
+            ).pack(anchor="w")
+
+            dims = core.ttk.Frame(frame)
+            dims.pack(fill="x", pady=3)
+            core.ttk.Label(dims, text="Width:").grid(row=0, column=0, sticky="w")
+            core.ttk.Entry(dims, textvariable=self.stock_width_override, width=9).grid(
+                row=0, column=1, padx=(4, 10)
+            )
+            core.ttk.Label(dims, text="Depth:").grid(row=0, column=2, sticky="w")
+            core.ttk.Entry(dims, textvariable=self.stock_depth_override, width=9).grid(
+                row=0, column=3, padx=4
+            )
+
+            elev = core.ttk.Frame(frame)
+            elev.pack(fill="x", pady=3)
+            core.ttk.Label(elev, text="Empty elevation (/e):").pack(side="left")
+            core.tk.Spinbox(
+                elev,
+                from_=0,
+                to=4094,
+                textvariable=self.stock_empty_elevation,
+                width=8,
+                bg="#1a1a1a",
+                fg=core.BZ_CYAN,
+                insertbackground=core.BZ_GREEN,
+            ).pack(side="left", padx=5)
+
+            param = core.ttk.Frame(frame)
+            param.pack(fill="x", pady=3)
+            core.ttk.Label(param, text="Layer file (/p):").pack(side="left")
+            core.ttk.Entry(param, textvariable=self.stock_param_path).pack(
+                side="left", fill="x", expand=True, padx=5
+            )
+            core.ttk.Button(param, text="...", width=3, command=self._browse_stock_parameter_file).pack(
+                side="left"
+            )
+
+            core.ttk.Checkbutton(
+                frame,
+                text="Deterministic MAT variants (seed 1; WorldBuilder extension)",
+                variable=self.make_trn_deterministic_mat,
+            ).pack(anchor="w", pady=(4, 0))
+            core.ttk.Label(
+                frame,
+                text="Blank = preset size. MakeTRN normalizes dimensions to 1280 m terrain zones.",
+                font=(self.custom_font_name, 7, "italic"),
+                foreground="#777777",
+                wraplength=390,
+            ).pack(anchor="w", pady=(3, 0))
+        except Exception as exc:
+            self.log(f"MakeTRN compatibility controls unavailable: {exc}", "warning")
+
+    def _browse_stock_parameter_file(self):
+        path = core.filedialog.askopenfilename(
+            title="Select MakeTRN layer parameter file",
+            filetypes=[("MakeTRN Layer Config", "*.ini *.txt *.trn"), ("All Files", "*.*")],
+        )
+        if path:
+            self.stock_param_path.set(path)
+
+    def validate_map_name(self, value):
+        """Make the existing Stock UI match its documented alphanumeric rule."""
+        return len(value) <= 8 and (value == "" or value.isalnum())
 
     def browse_hg2(self):
         path = core.filedialog.askopenfilename(
@@ -338,6 +439,16 @@ class BZ98TRNArchitect(_BaseArchitect):
                 pass
         return None
 
+    def _hgt_geometry_from_trn(self, trn):
+        if trn is None or not trn.width or not trn.depth:
+            raise ValueError("MakeTRN-compatible HGT import requires a companion TRN with Width and Depth.")
+        zones_x_f = float(trn.width) / METERS_PER_ZONE
+        zones_z_f = float(trn.depth) / METERS_PER_ZONE
+        zones_x, zones_z = int(round(zones_x_f)), int(round(zones_z_f))
+        if zones_x <= 0 or zones_z <= 0 or abs(zones_x_f - zones_x) > 1e-6 or abs(zones_z_f - zones_z) > 1e-6:
+            raise ValueError("HGT companion TRN dimensions must be exact 1280 m zone multiples.")
+        return zones_x, zones_z
+
     def run_auto_painter(self):
         source_path = self.hg2_path.get()
         if not source_path:
@@ -351,23 +462,34 @@ class BZ98TRNArchitect(_BaseArchitect):
         try:
             lower = source_path.lower()
             extension_note = ""
+            trn = self._painter_trn_config(source_path)
             if lower.endswith(".hg2"):
                 header, arr = read_hg2(source_path)
                 zones_x, zones_z = header.zones_x, header.zones_z
             elif lower.endswith(".hgt"):
-                raise ValueError(
-                    "MakeTRN compatibility mode requires Redux HG2 (256 samples/zone). "
-                    "Convert the HGT to HG2 first; HGT resampling would not be legacy-equivalent."
+                zones_x, zones_z = self._hgt_geometry_from_trn(trn)
+                arr = read_hgt_as_hg2(source_path, zones_x, zones_z)
+                hg2_path = os.path.splitext(source_path)[0] + ".hg2"
+                write_hg2(
+                    hg2_path,
+                    arr,
+                    zones_x=zones_x,
+                    zones_z=zones_z,
+                    zone_bits=DEFAULT_ZONE_BITS,
+                )
+                extension_note = (
+                    f"\nSource: legacy HGT converted with MakeTRN's recovered triangle interpolator."
+                    f"\nWrote companion HG2: {os.path.basename(hg2_path)}"
                 )
             else:
                 arr, zones_x, zones_z = self._read_image_for_painter(source_path)
                 extension_note = "\nSource: WorldBuilder image-input extension (resampled to 256 HG2 samples/zone)."
 
-            trn = self._painter_trn_config(source_path)
             min_x = trn.min_x if trn else 0.0
             min_z = trn.min_z if trn else 0.0
             world_width = trn.width if trn and trn.width else zones_x * 1280.0
             world_depth = trn.depth if trn and trn.depth else zones_z * 1280.0
+            seed = 1 if self.make_trn_deterministic_mat.get() else make_trn_runtime_seed()
             mat_data, stats = generate_mat(
                 arr,
                 self.paint_rules,
@@ -380,10 +502,13 @@ class BZ98TRNArchitect(_BaseArchitect):
                 min_z=min_z,
                 world_width=world_width,
                 world_depth=world_depth,
-                legacy_seed=1,
+                legacy_seed=seed,
                 strict=True,
             )
-            save_path = core.filedialog.asksaveasfilename(defaultextension=".mat", filetypes=[("Material Map", "*.mat")])
+            save_path = core.filedialog.asksaveasfilename(
+                defaultextension=".mat",
+                filetypes=[("Material Map", "*.mat")],
+            )
             if not save_path:
                 return
             write_mat(save_path, mat_data, zones_x, zones_z)
@@ -395,11 +520,16 @@ class BZ98TRNArchitect(_BaseArchitect):
                     f"{stats.unsupported_transition_tiles} generated transitions have no matching TRN texture definition (MAT preserved)"
                 )
             suffix = ("\n\nDiagnostics:\n- " + "\n- ".join(notes)) if notes else ""
+            rng_note = (
+                "deterministic WorldBuilder seed = 1"
+                if self.make_trn_deterministic_mat.get()
+                else f"legacy runtime seed = {seed} (MakeTRN srand(clock) behavior)"
+            )
             core.messagebox.showinfo(
                 "Success",
                 f"Saved {save_path}\nMAT: {zones_x}x{zones_z} zones, {mat_data.shape[1]}x{mat_data.shape[0]} entries\n"
                 f"Solids {stats.solid_tiles} | Caps {stats.cap_tiles} | Diagonals {stats.diagonal_tiles}"
-                f"{extension_note}{suffix}\n\nMakeTRN-compatible core; deterministic legacy RNG seed = 1.",
+                f"{extension_note}{suffix}\n\nMakeTRN-compatible core; {rng_note}.",
             )
         except Exception as exc:
             core.messagebox.showerror("Error", f"Failed: {exc}")
@@ -474,17 +604,112 @@ class BZ98TRNArchitect(_BaseArchitect):
             "This is a convenience tool, not a MakeTRN operation. Elevation rules are compared to min(raw HG2)/5.",
         )
 
-    def _generate_stock_map_worker(self, cfg):
-        super()._generate_stock_map_worker(cfg)
+    def _stock_preset_meters(self):
+        presets = {
+            "Tiny (1280m)": 1280,
+            "Small (2560m)": 2560,
+            "Medium (5120m)": 5120,
+            "Large (10240m)": 10240,
+            "Huge (20480m)": 20480,
+        }
+        return presets.get(self.stock_size_preset.get(), 5120)
+
+    def generate_stock_map(self):
+        name = self.stock_map_name.get().strip()
+        if not name:
+            core.messagebox.showerror("Error", "Map Name is required.")
+            return
+        if not self.validate_map_name(name):
+            core.messagebox.showerror("Error", "Map Name must be 1-8 alphanumeric characters.")
+            return
+
+        out_dir = core.filedialog.askdirectory(title="Select Output Folder")
+        if not out_dir:
+            return
+
         try:
-            zones = cfg["zones"]
-            zone_size = 1 << DEFAULT_ZONE_BITS
-            heights = np.zeros((zones * zone_size, zones * zone_size), dtype=np.uint16)
-            hg2_path = os.path.join(cfg["out_dir"], f"{cfg['name']}.hg2")
-            write_hg2(hg2_path, heights, zones_x=zones, zones_z=zones, zone_bits=DEFAULT_ZONE_BITS)
-            self.log("HG2 normalized to Redux 256x256 samples per zone.", "success")
+            preset = self._stock_preset_meters()
+            width_text = self.stock_width_override.get().strip()
+            depth_text = self.stock_depth_override.get().strip()
+            requested_width = int(width_text) if width_text else preset
+            requested_depth = int(depth_text) if depth_text else preset
+            geometry = make_stock_geometry(requested_width, requested_depth)
+            empty = validate_empty_elevation(self.stock_empty_elevation.get())
+
+            param_path = self.stock_param_path.get().strip()
+            if param_path:
+                parsed = parse_trn_painter(param_path)
+                if not parsed.layers:
+                    raise ValueError("The selected /p file contains no valid [Layer0]..[Layer7] rules.")
+                rules = [dict(layer) for layer in parsed.layers]
+                warnings = validate_paint_rules(rules)
+                fatal = [warning for warning in warnings if "slope range" not in warning]
+                if fatal:
+                    raise ValueError("; ".join(fatal))
+            else:
+                rules = default_make_trn_rules()
+
+            world_key = self.stock_world_type.get()
+            template = self.get_stock_template_data(world_key)
+            seed = 1 if self.make_trn_deterministic_mat.get() else make_trn_runtime_seed()
+            cfg = StockBuildConfig(
+                name=name,
+                out_dir=out_dir,
+                geometry=geometry,
+                empty_elevation=empty,
+                time_of_day=int(self.stock_time.get()),
+                music_track=int(self.audio_track.get()),
+                music_loop_first=int(self.audio_loop_first.get()),
+                music_loop_last=int(self.audio_loop_last.get()),
+                music_loop_skip=int(self.audio_loop_skip.get()),
+                ambient=tuple(float(value.get()) for value in self.light_ambient),
+                diffuse=tuple(float(value.get()) for value in self.light_diffuse),
+                specular=tuple(float(value.get()) for value in self.light_specular),
+                normal_view=template["NormalView"],
+                static_trn=template["Static"],
+                paint_rules=rules,
+                legacy_seed=seed,
+            )
+
+            if geometry.width_meters != requested_width or geometry.depth_meters != requested_depth:
+                self.log(
+                    f"MakeTRN normalized requested {requested_width}x{requested_depth} m to "
+                    f"{geometry.width_meters}x{geometry.depth_meters} m.",
+                    "info",
+                )
         except Exception as exc:
-            self.log(f"HG2 normalization error: {exc}", "error")
+            core.messagebox.showerror("Stock Map", str(exc))
+            return
+
+        self.btn_stock_gen.config(text="GENERATING...", state="disabled")
+        core.threading.Thread(target=self._generate_stock_map_worker, args=(cfg,), daemon=True).start()
+
+    def _generate_stock_map_worker(self, cfg):
+        try:
+            result = build_stock_map(cfg)
+            stats = result.mat_stats
+            rng_mode = "seed 1" if self.make_trn_deterministic_mat.get() else f"runtime seed {cfg.legacy_seed}"
+            self.log(
+                f"Success: Generated {os.path.basename(result.trn_path)}, "
+                f"{os.path.basename(result.hg2_path)}, and {os.path.basename(result.mat_path)}.",
+                "success",
+            )
+            self.log(
+                f"Geometry: {cfg.geometry.zones_x}x{cfg.geometry.zones_z} zones "
+                f"({cfg.geometry.width_meters}x{cfg.geometry.depth_meters} m); "
+                f"MAT {result.mat_width}x{result.mat_height}; "
+                f"solids {stats.solid_tiles}, caps {stats.cap_tiles}, diagonals {stats.diagonal_tiles}; {rng_mode}.",
+                "info",
+            )
+            if stats.unsupported_transition_tiles:
+                self.log(
+                    f"Warning: {stats.unsupported_transition_tiles} MAT transitions have no matching TRN transition texture.",
+                    "warning",
+                )
+        except Exception as exc:
+            self.log(f"Stock Gen Error: {exc}", "error")
+        finally:
+            self.root.after(0, lambda: self.btn_stock_gen.config(text="GENERATE MAP FILES", state="normal"))
 
 
 if __name__ == "__main__":
