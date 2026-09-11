@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import replace
 
 from maketrn_compat import make_stock_geometry, make_trn_runtime_seed
 from mat_codec import default_make_trn_rules, parse_trn_painter, validate_paint_rules
