@@ -113,14 +113,53 @@ def unpack_hgt_zones(payload: bytes, zones_x: int, zones_z: int) -> np.ndarray:
     return out
 
 
-def upsample_hgt_to_hg2(legacy: np.ndarray) -> np.ndarray:
-    """Reproduce MakeTRN's 128->256 samples/zone HGT interpolation.
+def smooth_make_trn_hg2(raster: np.ndarray) -> np.ndarray:
+    """Reproduce MakeTRN's post-interpolation 3x3 smoothing pass.
 
-    The disassembled interpolator splits every source quad along A->C and
-    evaluates the Redux grid at half-sample coordinates. At those exact 0.5
-    positions the piecewise-triangle formula reduces to the four assignments
-    below. At the far right/bottom edges MakeTRN clamps the next index by
-    reusing the current source sample.
+    Function 0x40180b copies the interpolated Redux raster, then replaces every
+    sample with the rounded mean of the in-bounds 3x3 neighborhood. Border
+    samples therefore use 4 or 6 values rather than replicated edge pixels.
+    The integer expression is `(2 * sum + count) / (2 * count)`, i.e. positive
+    half-up rounding rather than truncation.
+    """
+    src = np.asarray(raster, dtype=np.uint16)
+    if src.ndim != 2 or src.shape[0] == 0 or src.shape[1] == 0:
+        raise ValueError("HG2 raster must be a non-empty 2D array")
+
+    height, width = src.shape
+    sums = np.zeros((height, width), dtype=np.uint32)
+    counts = np.zeros((height, width), dtype=np.uint16)
+    src32 = src.astype(np.uint32)
+
+    for dz in (-1, 0, 1):
+        src_z0 = max(0, -dz)
+        src_z1 = min(height, height - dz)
+        dst_z0 = src_z0 + dz
+        dst_z1 = src_z1 + dz
+        for dx in (-1, 0, 1):
+            src_x0 = max(0, -dx)
+            src_x1 = min(width, width - dx)
+            dst_x0 = src_x0 + dx
+            dst_x1 = src_x1 + dx
+            sums[dst_z0:dst_z1, dst_x0:dst_x1] += src32[src_z0:src_z1, src_x0:src_x1]
+            counts[dst_z0:dst_z1, dst_x0:dst_x1] += 1
+
+    rounded = (2 * sums + counts.astype(np.uint32)) // (2 * counts.astype(np.uint32))
+    return rounded.astype(np.uint16)
+
+
+def upsample_hgt_to_hg2(legacy: np.ndarray) -> np.ndarray:
+    """Reproduce MakeTRN's complete 128->256 samples/zone HGT conversion.
+
+    The disassembled interpolator (0x401a13) splits every source quad along the
+    A->C diagonal and evaluates the Redux grid at half-sample coordinates. At
+    those exact 0.5 positions the piecewise-triangle formula reduces to the
+    four assignments below. At the far right/bottom edges the next source
+    sample is clamped to the current one.
+
+    MakeTRN then immediately calls 0x40180b, a 3x3 smoothing pass over the
+    interpolated raster. Returning the pre-filtered 2x image is therefore not
+    legacy-equivalent.
     """
     src = np.asarray(legacy, dtype=np.uint16) & 0x0FFF
     if src.ndim != 2 or src.shape[0] == 0 or src.shape[1] == 0:
@@ -139,12 +178,12 @@ def upsample_hgt_to_hg2(legacy: np.ndarray) -> np.ndarray:
     diagonal[:-1, -1] = src32[1:, -1]
     diagonal[-1, -1] = src32[-1, -1]
 
-    out = np.empty((src.shape[0] * 2, src.shape[1] * 2), dtype=np.uint16)
-    out[0::2, 0::2] = src
-    out[0::2, 1::2] = ((src32 + right) // 2).astype(np.uint16)
-    out[1::2, 0::2] = ((src32 + down) // 2).astype(np.uint16)
-    out[1::2, 1::2] = ((src32 + diagonal) // 2).astype(np.uint16)
-    return out
+    interpolated = np.empty((src.shape[0] * 2, src.shape[1] * 2), dtype=np.uint16)
+    interpolated[0::2, 0::2] = src
+    interpolated[0::2, 1::2] = ((src32 + right) // 2).astype(np.uint16)
+    interpolated[1::2, 0::2] = ((src32 + down) // 2).astype(np.uint16)
+    interpolated[1::2, 1::2] = ((src32 + diagonal) // 2).astype(np.uint16)
+    return smooth_make_trn_hg2(interpolated)
 
 
 def read_hgt_as_hg2(path: os.PathLike | str, zones_x: int, zones_z: int) -> np.ndarray:
