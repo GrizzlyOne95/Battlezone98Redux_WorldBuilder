@@ -100,16 +100,30 @@ def extract_terrain_name(path: os.PathLike | str) -> str | None:
 
 
 def _case_insensitive_child(directory: Path, name: str) -> Path | None:
-    direct = directory / name
-    if direct.is_file():
-        return direct
+    """Return the actual directory entry matching name, preserving on-disk casing."""
     if not directory.is_dir():
         return None
+
+    # Enumerate instead of returning ``directory / name`` after is_file().
+    # On case-insensitive filesystems (notably default macOS/Windows), that
+    # synthetic Path can exist while carrying casing that differs from the
+    # real directory entry. Returning the entry itself keeps behavior stable
+    # across platforms and makes diagnostics show the actual filename.
     target = name.casefold()
+    folded_match = None
     for child in directory.iterdir():
-        if child.is_file() and child.name.casefold() == target:
+        if not child.is_file():
+            continue
+        if child.name == name:
             return child
-    return None
+        if folded_match is None and child.name.casefold() == target:
+            folded_match = child
+    return folded_match
+
+
+def _canonical_file(path: Path) -> Path | None:
+    """Resolve a file path while preserving the actual final-component casing."""
+    return _case_insensitive_child(path.parent, path.name)
 
 
 def resolve_mission_trn(
@@ -142,16 +156,21 @@ def resolve_mission_trn(
         seen.add(key)
 
         candidate_path = Path(candidate)
-        if candidate_path.is_absolute() and candidate_path.is_file():
-            return candidate_path
+        if candidate_path.is_absolute():
+            resolved = _canonical_file(candidate_path)
+            if resolved is not None:
+                return resolved
+            continue
 
-        # Try the referenced relative path exactly first.
+        # Try the referenced relative path first, while returning the actual
+        # on-disk entry rather than a synthetic differently-cased Path.
         relative = directory / candidate_path
-        if relative.is_file():
-            return relative
+        resolved = _canonical_file(relative)
+        if resolved is not None:
+            return resolved
 
-        # Then try a case-insensitive sibling by basename. This matches normal
-        # BZ mission packaging while still handling Windows-authored casing.
+        # If TerrainName carried a directory component that is not present in
+        # the extracted package, also try its basename next to the BZN.
         sibling = _case_insensitive_child(directory, candidate_path.name)
         if sibling is not None:
             return sibling
