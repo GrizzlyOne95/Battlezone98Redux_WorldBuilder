@@ -30,6 +30,9 @@ class StockBuildConfig:
     static_trn: str
     paint_rules: Sequence[Mapping[str, object]]
     legacy_seed: int
+    min_x: int = 0
+    min_z: int = 0
+    source_heights: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
@@ -60,7 +63,7 @@ def _rgb_section(name: str, rgb: Iterable[float]) -> str:
 
 
 def build_stock_trn_text(config: StockBuildConfig) -> str:
-    """Build the WorldBuilder stock TRN while preserving MakeTRN size semantics."""
+    """Build a stock TRN while preserving recovered MakeTRN size/origin semantics."""
     _validate_name(config.name)
     empty = validate_empty_elevation(config.empty_elevation)
     geometry = config.geometry
@@ -78,8 +81,8 @@ def build_stock_trn_text(config: StockBuildConfig) -> str:
 
     parts = [
         "[Size]\n"
-        "MinX=0\n"
-        "MinZ=0\n"
+        f"MinX={int(config.min_x)}\n"
+        f"MinZ={int(config.min_z)}\n"
         f"Width={geometry.width_meters}\n"
         f"Depth={geometry.depth_meters}\n"
         f"Height={stock_trn_height(empty):.6f}\n",
@@ -102,6 +105,25 @@ def build_stock_trn_text(config: StockBuildConfig) -> str:
     return "\n".join(part.rstrip() for part in parts if part).rstrip() + "\n"
 
 
+def _build_heights(config: StockBuildConfig) -> np.ndarray:
+    geometry = config.geometry
+    zone_size = 1 << DEFAULT_ZONE_BITS
+    expected_shape = (geometry.zones_z * zone_size, geometry.zones_x * zone_size)
+    if config.source_heights is None:
+        return np.full(expected_shape, config.empty_elevation, dtype=np.uint16)
+
+    heights = np.asarray(config.source_heights)
+    if heights.shape != expected_shape:
+        raise ValueError(
+            f"Source height raster {heights.shape} does not match terrain geometry {expected_shape}"
+        )
+    if not np.issubdtype(heights.dtype, np.integer):
+        raise ValueError("Source height raster must contain integer HG2 samples")
+    if np.any(heights < 0) or np.any(heights > 0xFFFF):
+        raise ValueError("Source height raster contains values outside uint16 range")
+    return heights.astype(np.uint16, copy=True)
+
+
 def build_stock_map(config: StockBuildConfig) -> StockBuildResult:
     """Generate TRN, canonical Redux HG2, and MakeTRN-compatible MAT."""
     name = _validate_name(config.name)
@@ -109,12 +131,7 @@ def build_stock_map(config: StockBuildConfig) -> StockBuildResult:
     geometry = config.geometry
     os.makedirs(config.out_dir, exist_ok=True)
 
-    zone_size = 1 << DEFAULT_ZONE_BITS
-    heights = np.full(
-        (geometry.zones_z * zone_size, geometry.zones_x * zone_size),
-        empty,
-        dtype=np.uint16,
-    )
+    heights = _build_heights(config)
 
     hg2_path = os.path.join(config.out_dir, f"{name}.hg2")
     trn_path = os.path.join(config.out_dir, f"{name}.trn")
