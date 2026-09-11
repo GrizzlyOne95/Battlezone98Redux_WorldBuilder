@@ -1,504 +1,244 @@
 from __future__ import annotations
-import math
-import os
-import re
+import math, os, re
 from dataclasses import dataclass
-from typing import Iterable, Optional
 import numpy as np
 from PIL import Image, ImageDraw
-MAT_ZONE_SIZE = 64
-MAT_ENTRY_BYTES = 2
-HG2_SAMPLES_PER_ZONE = 256
-MAKE_TRN_SAMPLE_STEP = 4
-MAKE_TRN_LAYER_LIMIT = 8
-MAKE_TRN_ELEVATION_DIVISOR = 5
-MAKE_TRN_SLOPE_DENOMINATOR = 50.0
-MAKE_TRN_DEGREES_PER_RADIAN = 57.295780181884766
-PAINTER_MAX_MATERIAL = 7
-PAINTER_MAX_ELEVATION = 4095.0
-PAINTER_MAX_ELEVATION_DM = PAINTER_MAX_ELEVATION
-WORLD_ZONE_METERS = 1280.0
+
+MAT_ZONE_SIZE=64
+MAT_ENTRY_BYTES=2
+HG2_SAMPLES_PER_ZONE=256
+MAKE_TRN_SAMPLE_STEP=4
+MAKE_TRN_LAYER_LIMIT=8
+MAKE_TRN_ELEVATION_DIVISOR=5
+MAKE_TRN_DEGREES_PER_RADIAN=57.295780181884766
+PAINTER_MAX_MATERIAL=7
+PAINTER_MAX_ELEVATION=4095.0
+PAINTER_MAX_ELEVATION_DM=PAINTER_MAX_ELEVATION
+WORLD_ZONE_METERS=1280.0
 
 @dataclass(frozen=True)
 class MatEntry:
-    base: int
-    next: int
-    cap: int
-    flip: int
-    rotation: int
-    variant: int
-
+    base:int; next:int; cap:int; flip:int; rotation:int; variant:int
     @property
-    def mix(self):
-        return (self.cap & 1) << 3 | (self.flip & 1) << 2 | self.rotation & 3
-
+    def mix(self): return ((self.cap&1)<<3)|((self.flip&1)<<2)|(self.rotation&3)
     @property
-    def documented_variant(self):
-        return self.variant & 3
-
+    def documented_variant(self): return self.variant&3
     @property
-    def reserved(self):
-        return self.variant >> 2 & 3
+    def reserved(self): return (self.variant>>2)&3
 
 @dataclass
 class PaintStats:
-    total_tiles: int = 0
-    solid_tiles: int = 0
-    cap_tiles: int = 0
-    diagonal_tiles: int = 0
-    ambiguous_tiles: int = 0
-    unsupported_transition_tiles: int = 0
-    unmatched_samples: int = 0
+    total_tiles:int=0; solid_tiles:int=0; cap_tiles:int=0; diagonal_tiles:int=0
+    ambiguous_tiles:int=0; unsupported_transition_tiles:int=0; unmatched_samples:int=0
 
 @dataclass(frozen=True)
 class TRNPainterConfig:
-    layers: tuple[dict, ...]
-    texture_types: tuple[int, ...]
-    cap_transitions: frozenset[tuple[int, int]]
-    diagonal_transitions: frozenset[tuple[int, int]]
-    min_x: float = 0.0
-    min_z: float = 0.0
-    width: Optional[float] = None
-    depth: Optional[float] = None
-
+    layers:tuple; texture_types:tuple; cap_transitions:frozenset; diagonal_transitions:frozenset
+    min_x:float=0.; min_z:float=0.; width:float|None=None; depth:float|None=None
     @property
-    def transitions(self):
-        return self.cap_transitions | self.diagonal_transitions
+    def transitions(self): return self.cap_transitions|self.diagonal_transitions
 
 class MakeTRNRuleError(ValueError):
-
-    def __init__(self, x,iz, elevation, slope):
-        super().__init__(f'MakeTRN-compatible painter found no valid layer at x={x}, z={z}: elevation={elevation}, slope={slope}')
-        self.x = x
-        self.z = z
-        self.elevation = elevation
-        self.slope = slope
+    def __init__(self,x,z,elevation,slope):
+        super().__init__(f"MakeTRN-compatible painter found no valid layer at x={x}, z={z}: elevation={elevation}, slope={slope}")
+        self.x=x; self.z=z; self.elevation=elevation; self.slope=slope
 
 class MSVCRand:
-
-    def __init__(self, seed=1):
-        self.state = int(seed) & 4294967295
-
+    def __init__(self,seed=1): self.state=int(seed)&0xffffffff
     def rand(self):
-        self.state = self.state * 214013 + 2531011 & 4294967295
-        return self.state >> 16 & 32767
+        self.state=(self.state*214013+2531011)&0xffffffff
+        return (self.state>>16)&0x7fff
 
-def _check_range(name, value, low, high):
-    if not low <= int(value) <= high:
-        raise ValueError(f'{name} must be in {low}..{high}, got {value}')
+def _range(name,v,lo,hi):
+    if not lo<=int(v)<=hi: raise ValueError(f"{name} must be in {lo}..{hi}, got {v}")
 
-def encode_entry(base, next_mat, cap=0, flip=0, rotation=0, variant=0, reserved=None):
-    _check_range('base', base, 0, 15)
-    _check_range('next_mat', next_mat, 0, 15)
-    _check_range('cap', cap, 0, 1)
-    _check_range('flip', flip, 0, 1)
-    _check_range('rotation', rotation, 0, 3)
-    if reserved is None:
-        _check_range('variant', variant, 0, 15)
-        low = int(variant) & 15
-    else:
-        _check_range('variant', variant, 0, 3)
-        _check_range('reserved', reserved, 0, 3)
-        low = int(variant) & 3 | (int(reserved) & 3) << 2
-    mix = (int(cap) & 1) << 3 | (int(flip) & 1) << 2 | int(rotation) & 3
-    return low | (mix & 15) << 4 | (int(next_mat) & 15) << 8 | (int(base) & 15) << 12
+def encode_entry(base,next_mat,cap=0,flip=0,rotation=0,variant=0,reserved=None):
+    for n,v,lo,hi in (("base",base,0,15),("next_mat",next_mat,0,15),("cap",cap,0,1),("flip",flip,0,1),("rotation",rotation,0,3)): _range(n,v,lo,hi)
+    if reserved is None: _range("variant",variant,0,15); low=int(variant)&15
+    else: _range("variant",variant,0,3); _range("reserved",reserved,0,3); low=(int(variant)&3)|((int(reserved)&3)<<2)
+    mix=((int(cap)&1)<<3)|((int(flip)&1)<<2)|(int(rotation)&3)
+    return low|((mix&15)<<4)|((int(next_mat)&15)<<8)|((int(base)&15)<<12)
 
-def encode_mix_entry(base, next_mat, mix, variant=0):
-    _check_range('mix', mix, 0, 15)
-    return encode_entry(base=base, next_mat=next_mat, cap=mix >> 3 & 1, flip=mix >> 2 & 1, rotation=mix & 3, variant=variant)
+def encode_mix_entry(base,next_mat,mix,variant=0):
+    _range("mix",mix,0,15); return encode_entry(base,next_mat,(mix>>3)&1,(mix>>2)&1,mix&3,variant)
 
 def decode_entry(value):
-    _check_range('MAT entry', value, 0, 65535)
-    mix = int(value) >> 4 & 15
-    return MatEntry(base=int(value) >> 12 & 15, next=int(value) >> 8 & 15, cap=mix >> 3 & 1, flip=mix >> 2 & 1, rotation=mix & 3, variant=int(value) & 15)
+    _range("MAT entry",value,0,0xffff); mix=(int(value)>>4)&15
+    return MatEntry((value>>12)&15,(value>>8)&15,(mix>>3)&1,(mix>>2)&1,mix&3,value&15)
 
-def entry_to_bytes(value):
-    _check_range('MAT entry', value, 0, 65535)
-    return int(value).to_bytes(2, 'little')
-
+def entry_to_bytes(value): _range("MAT entry",value,0,0xffff); return int(value).to_bytes(2,"little")
 def entry_from_bytes(raw):
-    if len(raw) != 2:
-        raise ValueError('A MAT entry is exactly two bytes')
-    return int.from_bytes(raw, 'little')
+    if len(raw)!=2: raise ValueError("A MAT entry is exactly two bytes")
+    return int.from_bytes(raw,"little")
+def expected_mat_bytes(zx,zz):
+    if zx<=0 or zz<=0: raise ValueError("MAT zone dimensions must be positive")
+    return zx*zz*MAT_ZONE_SIZE*MAT_ZONE_SIZE*2
 
-def expected_mat_bytes(zones_x, zones_z):
-    if zones_x <= 0 or zones_z <= 0:
-        raise ValueError('MAT zone dimensions must be positive')
-    return zones_x * zones_z * MAT_ZONE_SIZE * MAT_ZONE_SIZE * MAT_ENTRY_BYTES
+def pack_mat_zones(entries,zx,zz):
+    a=np.asarray(entries); shape=(zz*64,zx*64)
+    if a.shape!=shape: raise ValueError(f"MAT shape {a.shape} does not match {shape}")
+    a=np.rint(a).astype("<u2"); out=bytearray(expected_mat_bytes(zx,zz)); p=0
+    for z in range(zz):
+        for x in range(zx):
+            raw=a[z*64:(z+1)*64,x*64:(x+1)*64].tobytes(order="C"); out[p:p+8192]=raw; p+=8192
+    return bytes(out)
 
-def pack_mat_zones(entries, zones_x, zones_z):
-    array = np.asarray(entries)
-    expected_shape = (zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE)
-    if array.shape != expected_shape:
-        raise ValueError(f'MAT shape {array.shape} does not match {expected_shape}')
-    if array.size and (np.min(array) < 0 or np.max(array) > 65535):
-        raise ValueError('MAT entries must fit in uint16')
-    encoded = np.rint(array).astype('<u2')
-    output = bytearray(expected_mat_bytes(zones_x, zones_z))
-    cursor = 0
-    zone_bytes = MAT_ZONE_SIZE * MAT_ZONE_SIZE * MAT_ENTRY_BYTES
-    for zone_z in range(zones_z):
-        for zone_x in range(zones_x):
-            z0 = zone_z * MAT_ZONE_SIZE
-            x0 = zone_x * MAT_ZONE_SIZE
-            zone = encoded[z0:z0 + MAT_ZONE_SIZE, x0:x0 + MAT_ZONE_SIZE]
-            raw = zone.astype('<u2', copy=False).tobytes(order='C')
-            output[cursor:cursor + zone_bytes] = raw
-            cursor += zone_bytes
-    return bytes(output)
-
-def unpack_mat_zones(payload, zones_x, zones_z):
-    expected = expected_mat_bytes(zones_x, zones_z)
-    if len(payload) != expected:
-        raise ValueError(f'MAT size mismatch: expected {expected} bytes, found {len(payload)}')
-    raw = np.frombuffer(payload, dtype='<u2')
-    full = np.empty((zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE), dtype=np.uint16)
-    cursor = 0
-    zone_entries = MAT_ZONE_SIZE * MAT_ZONE_SIZE
-    for zone_z in range(zones_z):
-        for zone_x in range(zones_x):
-            zone = raw[cursor:cursor + zone_entries].reshape((MAT_ZONE_SIZE, MAT_ZONE_SIZE))
-            z0 = zone_z * MAT_ZONE_SIZE
-            x0 = zone_x * MAT_ZONE_SIZE
-            full[z0:z0 + MAT_ZONE_SIZE, x0:x0 + MAT_ZONE_SIZE] = zone
-            cursor += zone_entries
-    return full
-
-def write_mat(path, entries, zones_x, zones_z):
-    with open(path, 'wb') as stream:
-        stream.write(pack_mat_zones(entries, zones_x, zones_z))
-
-def read_mat(path, zones_x, zones_z):
-    with open(path, 'rb') as stream:
-        return unpack_mat_zones(stream.read(), zones_x, zones_z)
-
-def _numeric(value):
-    match = re.search('[-+]?\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?', value)
-    if not match:
-        raise ValueError(f'not a numeric value: {value!r}')
-    return float(match.group(0))
-
-def _legacy_int(value, default):
-    try:
-        return int(_numeric(value))
-    except (ValueError, TypeError):
-        return int(default)
-
-def parse_trn_painter(path):
-    sections: dict[str, list[tuple[str, str]]] = {}
-    current = ''
-    with open(path, 'r', encoding='cp1252', errors='replace') as stream:
-        for original in stream:
-            line = original.strip()
-            if not line or line.startswith('//') or line.startswith(';'):
-                continue
-            if line.startswith('[') and line.endswith(']'):
-                current = line[1:-1].strip()
-                sections.setdefault(current, [])
-                continue
-            if '=' in line and current:
-                key, value = line.split('=', 1)
-                sections.setdefault(current, []).append((key.strip(), value.strip()))
-    size_values = {'minx': 0.0, 'minz': 0.0, 'width': None, 'depth': None}
-    texture_types: set[int] = set()
-    cap_transitions: set[tuple[int, int]] = set()
-    diagonal_transitions: set[tuple[int, int]] = set()
-    layer_rows: list[tuple[int, dict]] = []
-    for section, items in sections.items():
-        lower = section.lower()
-        values = {k.lower(): v for k, v in items}
-        if lower == 'size':
-            for key in size_values:
-                if key in values:
-                    try:
-                        size_values[key] = _numeric(values[key])
-                    except ValueError:
-                        pass
-            continue
-        tex_match = re.fullmatch('texturetype(\\d+)', lower)
-        if tex_match:
-            base = int(tex_match.group(1))
-            texture_types.add(base)
-            for key, _ in items:
-                cap_match = re.match('capto(\\d+)_', key, re.IGNORECASE)
-                diag_match = re.match('diagonalto(\\d+)_', key, re.IGNORECASE)
-                if cap_match:
-                    cap_transitions.add((base, int(cap_match.group(1))))
-                if diag_match:
-                    diagonal_transitions.add((base, int(diag_match.group(1))))
-            continue
-        layer_match = re.fullmatch('layer(\\d+)', lower)
-        if layer_match:
-            index = int(layer_match.group(1))
-            if index >= MAKE_TRN_LAYER_LIMIT:
-                continue
-            material = _legacy_int(values.get('material', '8'), 8)
-            if material >= 8:
-                continue
-            layer_rows.append((index, {'mat_id': material, 'min_h': _legacy_int(values.get('elevationstart', '4095'), 4095), 'max_h': _legacy_int(values.get('elevationend', '4095'), 4095), 'min_s': _legacy_int(values.get('slopestart', '90'), 90), 'max_s': _legacy_int(values.get('slopeend', '90'), 90), 'mask_path': ''}))
-    layer_rows.sort(key=lambda item: item[0])
-    return TRNPainterConfig(layers=tuple((row for _, row in layer_rows)), texture_types=tuple(sorted(texture_types)), cap_transitions=frozenset(cap_transitions), diagonal_transitions=frozenset(diagonal_transitions), min_x=float(size_values['minx'] or 0.0), min_z=float(size_values['minz'] or 0.0), width=size_values['width'], depth=size_values['depth'])
-
-def default_make_trn_rules():
-    return [{'mat_id': 0, 'min_h': 0, 'max_h': 4095, 'min_s': 0, 'max_s': 15, 'mask_path': ''}, {'mat_id': 3, 'min_h': 0, 'max_h': 4095, 'min_s': 15, 'max_s': 90, 'mask_path': ''}]
-
-def validate_paint_rules(rules):
-    warnings: list[str] = []
-    rules = list(rules)
-    if not rules:
-        return ['No paint rules are defined.']
-    if len(rules) > MAKE_TRN_LAYER_LIMIT:
-        warnings.append(f'MakeTRN supports at most {MAKE_TRN_LAYER_LIMIT} layers; found {len(rules)}')
-    for i, rule in enumerate(rules):
-        try:
-            mat_id = int(rule['mat_id'])
-            min_h, max_h = (int(float(rule['min_h'])), int(float(rule['max_h'])))
-            min_s, max_s = (int(float(rule['min_s'])), int(float(rule['max_s'])))
-        except (KeyError, TypeError, ValueError):
-            warnings.append(f'Rule {i}: malformed numeric fields')
-            continue
-        if not 0 <= mat_id <= PAINTER_MAX_MATERIAL:
-            warnings.append(f'Rule {i} (Mat{mat_id}): painter material must be 0..{PAINTER_MAX_MATERIAL}')
-        if min_h > max_h:
-            warnings.append(f'Rule {i} (Mat{mat_id}): ElevationStart > ElevationEnd')
-        if min_s > max_s:
-            warnings.append(f'Rule {i} (Mat{mat_id}): SlopeStart > SlopeEnd')
-        if min_s < 0 or max_s > 90:
-            warnings.append(f'Rule {i} (Mat{mat_id}): normal MakeTRN slope range is 0..90 degrees')
-        mask_path = str(rule.get('mask_path', '') or '')
-        if mask_path and (not mask_path.upper().startswith('PATH:')) and (not os.path.exists(mask_path)):
-            warnings.append(f'Rule {i} (Mat{mat_id}): mask file does not exist: {mask_path}')
-    return warnings
-
-def _signed_word(value):
-    value = int(value) & 65535
-    return value - 65536 if value & 32768 else value
-
-def _sample(height, x, z, fallback):
-    if 0 <= z < height.shape[0] and 0 <= x < height.shape[1]:
-        return _signed_word(int(height[z, x]))
-    return int(fallback)
-
-def make_trn_metrics_at(height_raw, x, z, fallback_elevation=0):
-    height = np.asarray(height_raw)
-    if height.ndim != 2:
-        raise ValueError('height data must be a 2-D array')
-    minimum = _sample(height, x, z, fallback_elevation)
-    for dz in range(-4, 4):
-        for dx in range(-4, 4):
-            minimum = min(minimum, _sample(height, x + dx, z + dz, fallback_elevation))
-    max_delta = 0
-    for dz in range(-4, 4):
-        for dx in range(-4, 4):
-            a = _sample(height, x + dx, z + dz, fallback_elevation)
-            b = _sample(height, x + dx + 1, z + dz, fallback_elevation)
-            c = _sample(height, x + dx + 1, z + dz + 1, fallback_elevation)
-            d = _sample(height, x + dx, z + dz + 1, fallback_elevation)
-            max_delta = max(max_delta, abs(a - b), abs(b - c), abs(c - d), abs(d - a))
-    elevation = math.trunc(minimum / MAKE_TRN_ELEVATION_DIVISOR)
-    if max_delta == 0:
-        slope = 0
-    else:
-        hyp = math.sqrt(float(max_delta * max_delta) + 2500.0)
-        angle = math.asin(float(max_delta) / hyp) * MAKE_TRN_DEGREES_PER_RADIAN
-        slope = math.trunc(angle)
-    return (elevation, slope)
-
-def calculate_slope_degrees(height_raw, zones_x, zones_z):
-    height = np.asarray(height_raw)
-    _validate_make_trn_geometry(height, zones_x, zones_z)
-    out = np.empty((zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE), dtype=np.float32)
-    for mz in range(out.shape[0]):
-        for mx in range(out.shape[1]):
-            _, slope = make_trn_metrics_at(height, mx * 4, mz * 4)
-            out[mz, mx] = slope
+def unpack_mat_zones(payload,zx,zz):
+    if len(payload)!=expected_mat_bytes(zx,zz): raise ValueError("MAT size mismatch")
+    raw=np.frombuffer(payload,dtype="<u2"); out=np.empty((zz*64,zx*64),np.uint16); p=0
+    for z in range(zz):
+        for x in range(zx): out[z*64:(z+1)*64,x*64:(x+1)*64]=raw[p:p+4096].reshape(64,64); p+=4096
     return out
 
-def _rasterize_path_mask(h, w, bzn_paths, label, min_x, min_z, world_width, world_depth):
-    target = next((p for p in bzn_paths if p.get('label') == label), None)
-    if not target or not target.get('points') or world_width <= 0 or (world_depth <= 0):
-        return np.zeros((h, w), dtype=bool)
-    image = Image.new('L', (w, h), 0)
-    draw = ImageDraw.Draw(image)
-    points = []
-    for px_world, pz_world in target['points']:
-        px = (float(px_world) - min_x) / world_width * w
-        pz = (float(pz_world) - min_z) / world_depth * h
-        points.append((px, pz))
-    if target.get('type') == 3 and len(points) >= 3:
-        draw.polygon(points, fill=255)
-    elif len(points) >= 2:
-        draw.line(points, fill=255, width=max(1, round(min(h, w) / 128)))
-    return np.asarray(image) > 127
+def write_mat(path,entries,zx,zz):
+    with open(path,"wb") as f: f.write(pack_mat_zones(entries,zx,zz))
+def read_mat(path,zx,zz):
+    with open(path,"rb") as f: return unpack_mat_zones(f.read(),zx,zz)
 
-def _prepare_rule_masks(height_shape, rules, bzn_paths, min_x, min_z, world_width, world_depth):
-    h, w = height_shape
-    result: list[Optional[np.ndarray]] = []
-    for rule in rules:
-        mask_path = str(rule.get('mask_path', '') or '')
-        if not mask_path:
-            result.append(None)
+def _num(v):
+    m=re.search(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?",v)
+    if not m: raise ValueError(v)
+    return float(m.group())
+def _iv(v,d):
+    try:return int(_num(v))
+    except:return d
+
+def parse_trn_painter(path):
+    sec={}; cur=""
+    with open(path,"r",encoding="cp1252",errors="replace") as f:
+        for s in f:
+            s=s.strip()
+            if not s or s.startswith(("//",";")): continue
+            if s.startswith("[") and s.endswith("]"): cur=s[1:-1].strip(); sec.setdefault(cur,[]); continue
+            if "=" in s and cur: k,v=s.split("=",1); sec[cur].append((k.strip(),v.strip()))
+    size={"minx":0.,"minz":0.,"width":None,"depth":None}; types=set(); caps=set(); diags=set(); layers=[]
+    for name,items in sec.items():
+        low=name.lower(); vals={k.lower():v for k,v in items}
+        if low=="size":
+            for k in size:
+                if k in vals:
+                    try:size[k]=_num(vals[k])
+                    except:pass
             continue
-        if mask_path.upper().startswith('PATH:'):
-            label = mask_path.split(':', 1)[1]
-            result.append(_rasterize_path_mask(h, w, bzn_paths, label, min_x, min_z, world_width, world_depth))
+        m=re.fullmatch(r"texturetype(\d+)",low)
+        if m:
+            b=int(m.group(1)); types.add(b)
+            for k,_ in items:
+                c=re.match(r"capto(\d+)_",k,re.I); d=re.match(r"diagonalto(\d+)_",k,re.I)
+                if c:caps.add((b,int(c.group(1))))
+                if d:diags.add((b,int(d.group(1))))
             continue
-        image = Image.open(mask_path).convert('L')
-        if image.size != (w, h):
-            image = image.resize((w, h), Image.Resampling.NEAREST)
-        result.append(np.asarray(image) > 127)
-    return result
+        m=re.fullmatch(r"layer(\d+)",low)
+        if m and int(m.group(1))<8:
+            mat=_iv(vals.get("material","8"),8)
+            if mat<8: layers.append((int(m.group(1)),{"mat_id":mat,"min_h":_iv(vals.get("elevationstart","4095"),4095),"max_h":_iv(vals.get("elevationend","4095"),4095),"min_s":_iv(vals.get("slopestart","90"),90),"max_s":_iv(vals.get("slopeend","90"),90),"mask_path":""}))
+    layers.sort()
+    return TRNPainterConfig(tuple(v for _,v in layers),tuple(sorted(types)),frozenset(caps),frozenset(diags),float(size["minx"] or 0),float(size["minz"] or 0),size["width"],size["depth"])
 
-def _validate_make_trn_geometry(height, zones_x, zones_z):
-    if height.ndim != 2:
-        raise ValueError('height data must be two-dimensional')
-    expected = (zones_z * HG2_SAMPLES_PER_ZONE, zones_x * HG2_SAMPLES_PER_ZONE)
-    if height.shape != expected:
-        raise ValueError(f'MakeTRN-compatible Redux painting expects {expected[1]}x{expected[0]} HG2 samples for {zones_x}x{zones_z} zones; found {height.shape[1]}x{height.shape[0]}')
+def default_make_trn_rules():
+    return [{"mat_id":0,"min_h":0,"max_h":4095,"min_s":0,"max_s":15,"mask_path":""},{"mat_id":3,"min_h":0,"max_h":4095,"min_s":15,"max_s":90,"mask_path":""}]
 
-def classify_samples(height_raw, rules, zones_x, zones_z, bzn_paths=None, min_x=0.0, min_z=0.0, world_width=None, world_depth=None, fallback_elevation=0, strict=True):
-    height = np.asarray(height_raw)
-    _validate_make_trn_geometry(height, zones_x, zones_z)
-    rules = list(rules)[:MAKE_TRN_LAYER_LIMIT]
-    if not rules:
-        rules = default_make_trn_rules()
-    bzn_paths = bzn_paths or []
-    world_width = float(world_width or zones_x * WORLD_ZONE_METERS)
-    world_depth = float(world_depth or zones_z * WORLD_ZONE_METERS)
-    masks = _prepare_rule_masks(height.shape, rules, bzn_paths, min_x, min_z, world_width, world_depth)
-    coarse_h = zones_z * MAT_ZONE_SIZE
-    coarse_w = zones_x * MAT_ZONE_SIZE
-    materials = np.zeros((coarse_h, coarse_w), dtype=np.uint8)
-    unmatched = 0
-    for mz in range(coarse_h):
-        z = mz * MAKE_TRN_SAMPLE_STEP
-        for mx in range(coarse_w):
-            x = mx * MAKE_TRN_SAMPLE_STEP
-            elevation, slope = make_trn_metrics_at(height, x, z, fallback_elevation)
-            chosen: Optional[int] = None
-            for index, rule in enumerate(rules):
-                min_h = int(float(rule['min_h']))
-                max_h = int(float(rule['max_h']))
-                min_s = int(float(rule['min_s']))
-                max_s = int(float(rule['max_s']))
-                if not (min_h <= elevation <= max_h and min_s <= slope <= max_s):
-                    continue
-                mask = masks[index]
-                if mask is not None and (not bool(mask[z, x])):
-                    continue
-                mat_id = int(rule['mat_id'])
-                if not 0 <= mat_id <= PAINTER_MAX_MATERIAL:
-                    if strict:
-                        raise MakeTRNRuleError(x, z, elevation, slope)
-                    continue
-                chosen = mat_id
-                break
+def validate_paint_rules(rules):
+    r=list(rules); w=[]
+    if not r:return ["No paint rules are defined."]
+    if len(r)>8:w.append(f"MakeTRN supports at most 8 layers; found {len(r)}")
+    for i,a in enumerate(r):
+        try:m=int(a["mat_id"]); h0=int(float(a["min_h"])); h1=int(float(a["max_h"])); s0=int(float(a["min_s"])); s1=int(float(a["max_s"]))
+        except:w.append(f"Rule {i}: malformed numeric fields"); continue
+        if not 0<=m<=7:w.append(f"Rule {i} (Mat{m}): painter material must be 0..7")
+        if h0>h1:w.append(f"Rule {i} (Mat{m}): ElevationStart > ElevationEnd")
+        if s0>s1:w.append(f"Rule {i} (Mat{m}): SlopeStart > SlopeEnd")
+        if s0<0 or s1>90:w.append(f"Rule {i} (Mat{m}): normal MakeTRN slope range is 0..90 degrees")
+        p=str(a.get("mask_path","") or "")
+        if p and not p.upper().startswith("PATH:") and not os.path.exists(p):w.append(f"Rule {i} (Mat{m}): mask file does not exist: {p}")
+    return w
+
+def _sw(v): v=int(v)&0xffff; return v-0x10000 if v&0x8000 else v
+def _sample(h,x,z,fallback=0): return _sw(h[z,x]) if 0<=z<h.shape[0] and 0<=x<h.shape[1] else int(fallback)
+def make_trn_metrics_at(height_raw,x,z,fallback_elevation=0):
+    h=np.asarray(height_raw); minimum=_sample(h,x,z,fallback_elevation); delta=0
+    for dz in range(-4,4):
+        for dx in range(-4,4):
+            minimum=min(minimum,_sample(h,x+dx,z+dz,fallback_elevation))
+            a=_sample(h,x+dx,z+dz,fallback_elevation); b=_sample(h,x+dx+1,z+dz,fallback_elevation); c=_sample(h,x+dx+1,z+dz+1,fallback_elevation); d=_sample(h,x+dx,z+dz+1,fallback_elevation)
+            delta=max(delta,abs(a-b),abs(b-c),abs(c-d),abs(d-a))
+    elev=math.trunc(minimum/5); slope=0 if not delta else math.trunc(math.asin(delta/math.sqrt(delta*delta+2500.0))*MAKE_TRN_DEGREES_PER_RADIAN)
+    return elev,slope
+
+def _geom(h,zx,zz):
+    expected=(zz*256,zx*256)
+    if np.asarray(h).shape!=expected: raise ValueError(f"MakeTRN-compatible Redux painting expects {expected[1]}x{expected[0]} HG2 samples; found {np.asarray(h).shape[1]}x{np.asarray(h).shape[0]}")
+def calculate_slope_degrees(height_raw,zx,zz):
+    h=np.asarray(height_raw); _geom(h,zx,zz); out=np.empty((zz*64,zx*64),np.float32)
+    for z in range(out.shape[0]):
+        for x in range(out.shape[1]):out[z,x]=make_trn_metrics_at(h,x*4,z*4)[1]
+    return out
+
+def _path_mask(h,w,paths,label,minx,minz,ww,wd):
+    p=next((p for p in paths if p.get("label")==label),None)
+    if not p or not p.get("points"):return np.zeros((h,w),bool)
+    im=Image.new("L",(w,h),0); d=ImageDraw.Draw(im); pts=[((float(x)-minx)/ww*w,(float(z)-minz)/wd*h) for x,z in p["points"]]
+    if p.get("type")==3 and len(pts)>=3:d.polygon(pts,fill=255)
+    elif len(pts)>=2:d.line(pts,fill=255,width=max(1,round(min(h,w)/128)))
+    return np.asarray(im)>127
+
+def _masks(shape,rules,paths,minx,minz,ww,wd):
+    out=[]; h,w=shape
+    for r in rules:
+        p=str(r.get("mask_path","") or "")
+        if not p:out.append(None)
+        elif p.upper().startswith("PATH:"):out.append(_path_mask(h,w,paths,p.split(":",1)[1],minx,minz,ww,wd))
+        else:
+            im=Image.open(p).convert("L")
+            if im.size!=(w,h):im=im.resize((w,h),Image.Resampling.NEAREST)
+            out.append(np.asarray(im)>127)
+    return out
+
+def classify_samples(height_raw,rules,zx,zz,bzn_paths=None,min_x=0.,min_z=0.,world_width=None,world_depth=None,fallback_elevation=0,strict=True):
+    h=np.asarray(height_raw); _geom(h,zx,zz); rules=list(rules)[:8] or default_make_trn_rules(); masks=_masks(h.shape,rules,bzn_paths or [],min_x,min_z,float(world_width or zx*1280),float(world_depth or zz*1280)); out=np.zeros((zz*64,zx*64),np.uint8); unmatched=0
+    for mz in range(out.shape[0]):
+        for mx in range(out.shape[1]):
+            x,z=mx*4,mz*4; e,s=make_trn_metrics_at(h,x,z,fallback_elevation); chosen=None
+            for i,r in enumerate(rules):
+                if int(float(r["min_h"]))<=e<=int(float(r["max_h"])) and int(float(r["min_s"]))<=s<=int(float(r["max_s"])) and (masks[i] is None or masks[i][z,x]): chosen=int(r["mat_id"]); break
             if chosen is None:
-                unmatched += 1
-                if strict:
-                    raise MakeTRNRuleError(x, z, elevation, slope)
-                chosen = 0
-            materials[mz, mx] = chosen
-    return (materials, unmatched)
-_MAKE_TRN_MIX_BY_PATTERN = {3: 0, 6: 1, 12: 2, 9: 3, 7: 8, 14: 9, 13: 10, 11: 11}
+                unmatched+=1
+                if strict:raise MakeTRNRuleError(x,z,e,s)
+                chosen=0
+            if not 0<=chosen<=7:raise MakeTRNRuleError(x,z,e,s)
+            out[mz,mx]=chosen
+    return out,unmatched
 
-def _legacy_variant_from_rand(value):
-    low = int(value) & 15
-    if low >= 8:
-        return 0
-    if low >= 4:
-        return 1
-    if low >= 2:
-        return 2
-    return 3
+_MIX={3:0,6:1,12:2,9:3,7:8,14:9,13:10,11:11}
+def _variant(r):
+    n=r&15
+    return 0 if n>=8 else 1 if n>=4 else 2 if n>=2 else 3
+def encode_make_trn_tile(corners,rng=None):
+    v=tuple(map(int,corners)); lo,hi=min(v),max(v); pattern=sum(1<<i for i,x in enumerate(v) if x!=lo); mix=_MIX.get(pattern); ambiguous=any(x not in (lo,hi) for x in v)
+    if ambiguous:base=nxt=7; mix=0; kind="ambiguous"
+    elif lo==hi:base=nxt=lo; mix=None; kind="solid"
+    elif mix is None:base=nxt=lo; kind="ambiguous"
+    else:base,nxt=lo,hi; kind="diagonal" if mix>=8 else "cap"
+    rng=rng or MSVCRand(1); r=rng.rand(); mirror=(r>>2)&4; mix=((r>>13)|mirror) if base==nxt else mix|mirror
+    return encode_mix_entry(base,nxt,mix,_variant(r)),kind
+def encode_transition_from_corners(corners,cap_transitions=None,diagonal_transitions=None,default_material=0): return encode_make_trn_tile(corners,MSVCRand(1))
+def _at(a,x,z): return int(a[z,x]) if 0<=z<a.shape[0] and 0<=x<a.shape[1] else 0
 
-def encode_make_trn_tile(corners, rng=None):
-    if len(corners) != 4:
-        raise ValueError('MakeTRN tile encoding requires four corner materials')
-    values = tuple((int(v) for v in corners))
-    for value in values:
-        _check_range('material', value, 0, 7)
-    minimum = min(values)
-    maximum = max(values)
-    pattern = 0
-    for bit, value in enumerate(values):
-        if value != minimum:
-            pattern |= 1 << bit
-    ambiguous = any((value not in (minimum, maximum) for value in values))
-    mix_base = _MAKE_TRN_MIX_BY_PATTERN.get(pattern)
-    if ambiguous:
-        base = next_mat = 7
-        mix_base = 0
-        kind = 'ambiguous'
-    elif minimum == maximum:
-        base = next_mat = minimum
-        mix_base = None
-        kind = 'solid'
-    elif mix_base is None:
-        base = next_mat = minimum
-        kind = 'ambiguous'
-    else:
-        base, next_mat = (minimum, maximum)
-        kind = 'diagonal' if mix_base >= 8 else 'cap'
-    rng = rng or MSVCRand(1)
-    random_value = rng.rand()
-    mirror = random_value >> 2 & 4
-    if base == next_mat:
-        mix = random_value >> 13 | mirror
-    else:
-        mix = int(mix_base) | mirror
-    variant = _legacy_variant_from_rand(random_value)
-    return (encode_mix_entry(base, next_mat, mix, variant), kind)
-
-def encode_transition_from_corners(corners, cap_transitions=None, diagonal_transitions=None, default_material=0):
-    del cap_transitions, diagonal_transitions, default_material
-    return encode_make_trn_tile(corners, MSVCRand(1))
-
-def _coarse_material_at(materials, mx, mz):
-    if 0 <= mz < materials.shape[0] and 0 <= mx < materials.shape[1]:
-        return int(materials[mz, mx])
-    return 0
-
-def generate_mat(height_raw, rules, zones_x, zones_z, cap_transitions=None, diagonal_transitions=None, transitions=None, bzn_paths=None, min_x=0.0, min_z=0.0, world_width=None, world_depth=None, default_material=0, legacy_seed=1, fallback_elevation=0, strict=True):
-    del default_material
-    warnings = validate_paint_rules(rules)
-    fatal = [warning for warning in warnings if 'malformed' in warning or 'must be 0..7' in warning or 'ElevationStart >' in warning or ('SlopeStart >' in warning) or ('at most' in warning) or ('does not exist' in warning)]
-    if fatal:
-        raise ValueError('; '.join(fatal))
-    height = np.asarray(height_raw)
-    _validate_make_trn_geometry(height, zones_x, zones_z)
-    sample_mats, unmatched = classify_samples(height, rules, zones_x, zones_z, bzn_paths=bzn_paths, min_x=min_x, min_z=min_z, world_width=world_width, world_depth=world_depth, fallback_elevation=fallback_elevation, strict=strict)
-    if transitions is not None and cap_transitions is None and (diagonal_transitions is None):
-        cap_transitions = transitions
-        diagonal_transitions = transitions
-    caps = frozenset(cap_transitions or ())
-    diagonals = frozenset(diagonal_transitions or ())
-    validating_caps = cap_transitions is not None
-    validating_diagonals = diagonal_transitions is not None
-    out = np.empty((zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE), dtype=np.uint16)
-    stats = PaintStats(total_tiles=out.size, unmatched_samples=unmatched)
-    rng = MSVCRand(legacy_seed)
-    for zone_z in range(zones_z):
-        for zone_x in range(zones_x):
-            for local_z in range(MAT_ZONE_SIZE):
-                mz = zone_z * MAT_ZONE_SIZE + local_z
-                for local_x in range(MAT_ZONE_SIZE):
-                    mx = zone_x * MAT_ZONE_SIZE + local_x
-                    corners = (_coarse_material_at(sample_mats, mx, mz), _coarse_material_at(sample_mats, mx + 1, mz), _coarse_material_at(sample_mats, mx + 1, mz + 1), _coarse_material_at(sample_mats, mx, mz + 1))
-                    entry, kind = encode_make_trn_tile(corners, rng)
-                    out[mz, mx] = entry
-                    decoded = decode_entry(entry)
-                    if kind == 'solid':
-                        stats.solid_tiles += 1
-                    elif kind == 'cap':
-                        stats.cap_tiles += 1
-                        if validating_caps and (decoded.base, decoded.next) not in caps:
-                            stats.unsupported_transition_tiles += 1
-                    elif kind == 'diagonal':
-                        stats.diagonal_tiles += 1
-                        if validating_diagonals and (decoded.base, decoded.next) not in diagonals:
-                            stats.unsupported_transition_tiles += 1
-                    else:
-                        stats.ambiguous_tiles += 1
-                        stats.solid_tiles += 1
-    return (out, stats)
+def generate_mat(height_raw,rules,zx,zz,cap_transitions=None,diagonal_transitions=None,transitions=None,bzn_paths=None,min_x=0.,min_z=0.,world_width=None,world_depth=None,default_material=0,legacy_seed=1,fallback_elevation=0,strict=True):
+    warnings=validate_paint_rules(rules); fatal=[w for w in warnings if any(k in w for k in ("malformed","must be 0..7","ElevationStart >","SlopeStart >","at most","does not exist"))]
+    if fatal:raise ValueError("; ".join(fatal))
+    mats,unmatched=classify_samples(height_raw,rules,zx,zz,bzn_paths,min_x,min_z,world_width,world_depth,fallback_elevation,strict)
+    if transitions is not None and cap_transitions is None and diagonal_transitions is None:cap_transitions=diagonal_transitions=transitions
+    caps=frozenset(cap_transitions or ()); diags=frozenset(diagonal_transitions or ()); vc=cap_transitions is not None; vd=diagonal_transitions is not None
+    out=np.empty((zz*64,zx*64),np.uint16); st=PaintStats(out.size,unmatched_samples=unmatched); rng=MSVCRand(legacy_seed)
+    for Z in range(zz):
+        for X in range(zx):
+            for lz in range(64):
+                z=Z*64+lz
+                for lx in range(64):
+                    x=X*64+lx; entry,kind=encode_make_trn_tile((_at(mats,x,z),_at(mats,x+1,z),_at(mats,x+1,z+1),_at(mats,x,z+1)),rng); out[z,x]=entry; d=decode_entry(entry)
+                    if kind=="solid":st.solid_tiles+=1
+                    elif kind=="cap":st.cap_tiles+=1; st.unsupported_transition_tiles+=int(vc and (d.base,d.next) not in caps)
+                    elif kind=="diagonal":st.diagonal_tiles+=1; st.unsupported_transition_tiles+=int(vd and (d.base,d.next) not in diags)
+                    else:st.ambiguous_tiles+=1; st.solid_tiles+=1
+    return out,st
