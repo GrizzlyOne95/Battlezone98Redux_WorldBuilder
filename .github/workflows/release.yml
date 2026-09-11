@@ -62,22 +62,26 @@ jobs:
       - name: Build Linux executable
         if: runner.os == 'Linux'
         run: |
-          pyinstaller --noconfirm --clean --onefile --name world-builder-linux --add-data="BZONE.ttf:." world_builder.py
+          pyinstaller --noconfirm --clean --onefile --copy-metadata imageio --name world-builder-linux --add-data="BZONE.ttf:." world_builder.py
           test "$(stat -c%s dist/world-builder-linux)" -gt 1000000
+          pyi-archive_viewer dist/world-builder-linux -l | grep -E 'imageio.*\.dist-info'
 
       - name: Build Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --windowed --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." world_builder.py
+          pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." world_builder.py
           $asset = Get-Item .\dist\world-builder-windows.exe
           if ($asset.Length -lt 1000000) { throw "Windows release asset is unexpectedly small: $($asset.Length) bytes" }
+          $archive = pyi-archive_viewer .\dist\world-builder-windows.exe -l | Out-String
+          if ($archive -notmatch 'imageio.*\.dist-info') { throw "Frozen Windows executable is missing imageio distribution metadata" }
 
       - name: Build and package macOS app
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --name world_builder --add-data="BZONE.ttf:." world_builder.py
+          pyinstaller --noconfirm --clean --onedir --windowed --copy-metadata imageio --name world_builder --add-data="BZONE.ttf:." world_builder.py
           test -d dist/world_builder.app
+          find dist/world_builder.app -path '*imageio*.dist-info/METADATA' -print -quit | grep .
           ditto -c -k --sequesterRsrc --keepParent dist/world_builder.app dist/world-builder-macos.zip
           test "$(stat -f%z dist/world-builder-macos.zip)" -gt 1000000
 
