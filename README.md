@@ -2,7 +2,19 @@
 A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2/HGT conversion, and more
 
 ## Stock Map Creator
-Auto generates TRN, HG2, and MAT files based on default worlds without needing to use MakeTRN. Implements some rarely used paramters for tweaking. 
+Auto generates TRN, HG2, and MAT files based on default worlds without needing to use MakeTRN. Implements the useful MakeTRN 2.1.2 controls recovered from the original executable, including independent width/depth, EmptyElevation, `[LayerN]` parameter files, and legacy runtime-random MAT variants. WorldBuilder also keeps its selectable Redux worlds, time, audio, and lighting controls.
+
+The generated terrain uses canonical Redux 256x256 HG2 samples per zone and the recovered MakeTRN 64x64 MAT entries per zone. Blank builds now emit the complete TRN + HG2 + MAT set in one operation.
+
+The original MakeTRN also has a working Interstate '76 `.MSN` + `.TER` import mode. That format is now supported by the open-source converter:
+
+```powershell
+python msn2terrain.py mission.MSN --output Export --name I76MAP
+```
+
+The converter recovers `TDEF/ZMAP`, crops the occupied I76 zone rectangle, imports 256x256 TER blocks, preserves the source map origin in TRN `MinX/MinZ`, and writes TRN + HG2 + MAT through the same compatibility core. It also accepts `/p=layers.ini` and `/e=N` aliases.
+
+See [`docs/MAKETRN_REVERSE_ENGINEERING.md`](docs/MAKETRN_REVERSE_ENGINEERING.md) for the executable-level findings and parity matrix.
 
 <img width="1402" height="982" alt="python_el54uNiI0s" src="https://github.com/user-attachments/assets/057925a0-8737-4771-8830-6548a5c439d9" />
 
@@ -58,20 +70,12 @@ python bzpaint.py mapname.trn /p=moon.ini /e=0
 
 Useful options:
 
-- `--seed N` selects the deterministic MSVCR120-compatible texture-variant seed. The historical executable used `srand(clock())`; WorldBuilder defaults to `1` for reproducible builds.
+- `--seed N` selects a deterministic MSVCR120-compatible texture-variant seed. The historical executable used `srand(clock())`; the Stock Map Creator compatibility path follows that runtime-random behavior by default, while deterministic seed `1` remains available for reproducible testing/builds.
 - `--dry-run` performs the complete paint and transition validation without writing a MAT.
 - `--json` prints machine-readable statistics and diagnostics.
 - `--output FILE` chooses a MAT path instead of replacing the TRN suffix with `.mat`.
 - `/e=N` or `--empty-elevation N` controls the legacy out-of-bounds EmptyElevation value.
 
-See [`docs/MAT_FORMAT_VALIDATION.md`](docs/MAT_FORMAT_VALIDATION.md) for the recovered format and MakeTRN behavior.
+See [`docs/MAT_FORMAT_VALIDATION.md`](docs/MAT_FORMAT_VALIDATION.md) for the recovered MAT format and painter behavior.
 
 <img width="1402" height="982" alt="python_1O4aYb26T2" src="https://github.com/user-attachments/assets/d91b2377-129a-46c3-9942-a8695927f0f4" />
-
-
-
-
-
-
-
-
