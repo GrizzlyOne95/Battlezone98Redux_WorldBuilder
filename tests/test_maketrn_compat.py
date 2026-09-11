@@ -13,6 +13,11 @@ class MakeTRNCompatTests(unittest.TestCase):
         self.assertEqual(maketrn_compat.normalize_make_trn_dimension(1285), 2560)
         self.assertEqual(maketrn_compat.normalize_make_trn_dimension(2000), 2560)
 
+    def test_zero_sample_dimensions_are_rejected(self):
+        for value in (1, 2, 3, 4):
+            with self.assertRaises(ValueError):
+                maketrn_compat.normalize_make_trn_dimension(value)
+
     def test_rectangular_geometry(self):
         geom = maketrn_compat.make_stock_geometry(2560, 5120)
         self.assertEqual((geom.width_meters, geom.depth_meters), (2560, 5120))
