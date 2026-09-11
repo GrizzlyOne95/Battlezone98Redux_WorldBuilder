@@ -14,6 +14,14 @@ from hg2_codec import (
     read_hg2_header,
     write_hg2,
 )
+from mission_visualizer import (
+    extract_terrain_name,
+    hg2_north_up,
+    hg2_world_size,
+    resolve_companion_hg2,
+    resolve_mission_trn,
+    world_to_canvas,
+)
 from mat_codec import (
     HG2_SAMPLES_PER_ZONE,
     PAINTER_MAX_ELEVATION,
@@ -123,21 +131,173 @@ class BZ98TRNArchitect(_BaseArchitect):
         finally:
             self.root.after(0, lambda: self.btn_hg2_png.config(text="HG2 -> PNG", state="normal"))
 
+    def _load_mission_background(self, path, *, redraw=True):
+        """Load a mission background and retain its authoritative world geometry."""
+        if path.lower().endswith(".hg2"):
+            header, heights = read_hg2(path)
+            display_heights = hg2_north_up(heights)
+            peak = max(int(display_heights.max()), 1)
+            arr_norm = np.clip(
+                display_heights.astype(np.float32) / float(peak) * 255.0,
+                0,
+                255,
+            ).astype(np.uint8)
+            img = Image.fromarray(arr_norm)
+            world_width, world_depth = hg2_world_size(header)
+            self.mission_bg_world_width = world_width
+            self.mission_bg_world_depth = world_depth
+            self.mission_bg_hg2_header = header
+        else:
+            img = Image.open(path).convert("L")
+            self.mission_bg_world_width = None
+            self.mission_bg_world_depth = None
+            self.mission_bg_hg2_header = None
+
+        self.mission_bg_img = img
+        self.mission_bg_source = os.path.abspath(path)
+        if redraw:
+            self.redraw_mission_canvas()
+
     def browse_mission_bg(self):
-        path = core.filedialog.askopenfilename(filetypes=[("Map Image", "*.hg2 *.png *.bmp *.jpg")])
+        path = core.filedialog.askopenfilename(
+            filetypes=[("Map Image", "*.hg2 *.png *.bmp *.jpg")]
+        )
         if not path:
             return
         try:
-            if path.lower().endswith(".hg2"):
-                _, heights = read_hg2(path)
-                peak = max(int(heights.max()), 1)
-                img = Image.fromarray(np.clip(heights.astype(np.float32) / peak * 255.0, 0, 255).astype(np.uint8))
-            else:
-                img = Image.open(path).convert("L")
-            self.mission_bg_img = img
-            self.redraw_mission_canvas()
+            self._load_mission_background(path)
         except Exception as exc:
             core.messagebox.showerror("Error", f"Failed to load map: {exc}")
+
+    def _fallback_mission_world_size(self):
+        try:
+            size = float(self.selected_preset.get().split("(")[1].split("m")[0])
+        except Exception:
+            size = 5120.0
+        return size, size
+
+    def load_mission_overlay(self):
+        bzn_path = core.filedialog.askopenfilename(
+            title="Select Mission File (ASCII)",
+            filetypes=[("Battlezone Mission", "*.bzn")],
+        )
+        if not bzn_path:
+            return
+
+        try:
+            terrain_name = extract_terrain_name(bzn_path)
+            trn_path = resolve_mission_trn(bzn_path, terrain_name)
+            trn_data = core.TRNParser.parse(str(trn_path)) if trn_path else {}
+            self.min_x = float(trn_data.get("MinX", 0.0) or 0.0)
+            self.min_z = float(trn_data.get("MinZ", 0.0) or 0.0)
+            self.mission_objects, self.ai_paths = core.BZNParser.parse(bzn_path)
+
+            companion_hg2 = resolve_companion_hg2(trn_path)
+            if self.mission_bg_img is None and companion_hg2 is not None:
+                self._load_mission_background(str(companion_hg2), redraw=False)
+
+            trn_width = float(trn_data["Width"]) if trn_data.get("Width") else None
+            trn_depth = float(trn_data["Depth"]) if trn_data.get("Depth") else None
+            bg_width = getattr(self, "mission_bg_world_width", None)
+            bg_depth = getattr(self, "mission_bg_world_depth", None)
+            fallback_width, fallback_depth = self._fallback_mission_world_size()
+            self.mission_world_width = trn_width or bg_width or fallback_width
+            self.mission_world_depth = trn_depth or bg_depth or fallback_depth
+
+            warnings = []
+            if trn_path is None:
+                warnings.append("TRN not found; using HG2/preset dimensions.")
+            if trn_width and trn_depth and bg_width and bg_depth and (
+                abs(trn_width - bg_width) > 0.01 or abs(trn_depth - bg_depth) > 0.01
+            ):
+                warnings.append(
+                    "TRN/HG2 size mismatch: "
+                    f"TRN {trn_width:g}x{trn_depth:g}, HG2 {bg_width:g}x{bg_depth:g}."
+                )
+
+            bg_source = getattr(self, "mission_bg_source", None)
+            if companion_hg2 is not None and bg_source:
+                if os.path.normcase(os.path.abspath(str(companion_hg2))) != os.path.normcase(os.path.abspath(bg_source)):
+                    warnings.append("Loaded background differs from the BZN terrain HG2.")
+
+            info_lines = [
+                f"TerrainName: {terrain_name or 'N/A'}",
+                f"TRN: {os.path.basename(str(trn_path)) if trn_path else 'N/A'}",
+                f"MinX: {self.min_x:g}, MinZ: {self.min_z:g}",
+                f"World: {self.mission_world_width:g} x {self.mission_world_depth:g}",
+                f"Objects: {len(self.mission_objects)}",
+                f"Paths: {len(self.ai_paths)}",
+            ]
+            if getattr(self, "mission_bg_source", None):
+                info_lines.append(f"Background: {os.path.basename(self.mission_bg_source)}")
+            if warnings:
+                info_lines.append("")
+                info_lines.extend(f"WARNING: {warning}" for warning in warnings)
+
+            self.mission_info.config(state="normal")
+            self.mission_info.delete("1.0", "end")
+            self.mission_info.insert("1.0", "\n".join(info_lines))
+            self.mission_info.config(state="disabled")
+            self.redraw_mission_canvas()
+        except ValueError as exc:
+            core.messagebox.showerror("Error", str(exc))
+        except Exception as exc:
+            core.messagebox.showerror("Error", f"Failed to load mission: {exc}")
+
+    def draw_mission_objects_on_canvas(self, canvas):
+        if not hasattr(self, "map_draw_rect"):
+            cw = canvas.winfo_width()
+            ch = canvas.winfo_height()
+            self.map_draw_rect = (cw // 2 - 250, ch // 2 - 250, 500, 500)
+
+        world_width = getattr(self, "mission_world_width", None)
+        world_depth = getattr(self, "mission_world_depth", None)
+        if not world_width or not world_depth:
+            world_width = getattr(self, "mission_bg_world_width", None)
+            world_depth = getattr(self, "mission_bg_world_depth", None)
+        if not world_width or not world_depth:
+            world_width, world_depth = self._fallback_mission_world_size()
+
+        min_x = float(getattr(self, "min_x", 0.0))
+        min_z = float(getattr(self, "min_z", 0.0))
+        for path in getattr(self, "ai_paths", []) or []:
+            points = path.get("points", [])
+            if len(points) < 2:
+                continue
+            polyline = []
+            for point in points:
+                try:
+                    cx, cy = world_to_canvas(
+                        point[0], point[1], min_x=min_x, min_z=min_z,
+                        world_width=world_width, world_depth=world_depth,
+                        draw_rect=self.map_draw_rect,
+                    )
+                    polyline.extend((cx, cy))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            if len(polyline) >= 4:
+                canvas.create_line(*polyline, fill=core.BZ_CYAN, width=1)
+
+        for obj in getattr(self, "mission_objects", []) or []:
+            try:
+                cx, cy = world_to_canvas(
+                    obj["pos"][0], obj["pos"][2], min_x=min_x, min_z=min_z,
+                    world_width=world_width, world_depth=world_depth,
+                    draw_rect=self.map_draw_rect,
+                )
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+            color = core.BZ_GREEN
+            cls = obj.get("odf", "").lower()
+            if "recycle" in cls or "cons" in cls:
+                color = "#ffee00"
+            elif "fact" in cls:
+                color = "#ff8800"
+            elif "turr" in cls or "tow" in cls:
+                color = "#ff4444"
+            elif "scav" in cls:
+                color = "#0088ff"
+            canvas.create_rectangle(cx - 2, cy - 2, cx + 2, cy + 2, fill=color, outline="")
 
     def _read_image_for_painter(self, path):
         """WorldBuilder extension: normalize an image to Redux's 256-sample/zone grid."""
