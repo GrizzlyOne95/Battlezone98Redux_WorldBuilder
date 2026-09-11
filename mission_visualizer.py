@@ -4,6 +4,7 @@ import math
 import os
 import re
 import struct
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -262,10 +263,48 @@ def _parse_binary_header(raw: bytes) -> _BinaryHeader:
     )
 
 
+def parse_mission_bzn(
+    path: os.PathLike | str,
+    ascii_parser,
+) -> tuple[list[dict], list[dict]]:
+    """Dispatch a mission to the binary overlay reader or the existing ASCII parser."""
+    if is_binary_bzn(path):
+        return parse_binary_bzn_overlay(path)
+    return ascii_parser(path)
+
+
+def _install_world_builder_core_binary_bridge() -> None:
+    """Bridge WorldBuilder's legacy BZNParser call without creating an import cycle.
+
+    world_builder.py imports world_builder_core before this module and calls
+    extract_terrain_name() immediately before core.BZNParser.parse(). Installing
+    the wrapper only when a binary mission is actually selected keeps the ASCII
+    parser untouched and localizes binary format knowledge in this module.
+    """
+    core = sys.modules.get("world_builder_core")
+    if core is None or not hasattr(core, "BZNParser"):
+        return
+
+    parser_class = core.BZNParser
+    current = parser_class.parse
+    if getattr(current, "_mission_visualizer_binary_bridge", False):
+        return
+
+    original = current
+
+    def dispatch(path):
+        return parse_mission_bzn(path, original)
+
+    dispatch._mission_visualizer_binary_bridge = True
+    dispatch._mission_visualizer_ascii_parser = original
+    parser_class.parse = staticmethod(dispatch)
+
+
 def extract_terrain_name(path: os.PathLike | str) -> str | None:
     raw = Path(path).read_bytes()
     binary, _ = _binary_switch(raw)
     if binary:
+        _install_world_builder_core_binary_bridge()
         return _parse_binary_header(raw).terrain_name
     value, _ = _find_ascii_bzn_field(raw, ("TerrainName", "g_TerrainName"))
     return value
