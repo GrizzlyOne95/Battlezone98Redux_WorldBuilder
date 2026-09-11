@@ -1,7 +1,9 @@
 import struct
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -161,6 +163,29 @@ class MissionVisualizerTests(unittest.TestCase):
             self.assertEqual(calls, [path])
             self.assertEqual(objects, [{"ascii": True}])
             self.assertEqual(paths, [])
+
+    def test_binary_terrain_read_bridges_world_builder_core_parser(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(_binary_bzn_fixture())
+
+            class DummyBZNParser:
+                @staticmethod
+                def parse(_path):
+                    raise AssertionError("binary mission reached the ASCII parser")
+
+            previous = sys.modules.get("world_builder_core")
+            sys.modules["world_builder_core"] = SimpleNamespace(BZNParser=DummyBZNParser)
+            try:
+                self.assertEqual(extract_terrain_name(path), "MARS.TRN")
+                objects, paths = DummyBZNParser.parse(path)
+                self.assertEqual(objects[0]["odf"], "avrecy")
+                self.assertEqual(paths[0]["label"], "route")
+            finally:
+                if previous is None:
+                    sys.modules.pop("world_builder_core", None)
+                else:
+                    sys.modules["world_builder_core"] = previous
 
     def test_resolve_trn_prefers_terrain_name_case_insensitively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
