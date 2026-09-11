@@ -113,18 +113,27 @@ class MatCodecTests(unittest.TestCase):
             self.assertEqual(decoded.variant, 0)
             self.assertEqual(kind, 'diagonal' if expected_mix >= 8 else 'cap')
 
-    def test_make_trn_collapses_unrepresentable_and_three_material_cases(self):
-        entry, kind = mat_codec.encode_make_trn_tile((1,0,0,0), mat_codec.MSVCRand(1))
-        decoded = mat_codec.decode_entry(entry)
-        self.assertEqual(kind, 'ambiguous')
-        self.assertEqual((decoded.base, decoded.next), (0,0))
+    def test_make_trn_all_unsupported_two_material_patterns_collapse_to_low(self):
+        # Pattern bits are A/B/C/D = bit0/bit1/bit2/bit3 and mark corners != minimum.
+        unsupported = (
+            (1,0,0,0),  # 0001
+            (0,1,0,0),  # 0010
+            (0,0,1,0),  # 0100
+            (0,0,0,1),  # 1000
+            (1,0,1,0),  # 0101 checkerboard
+            (0,1,0,1),  # 1010 checkerboard
+        )
+        for corners in unsupported:
+            with self.subTest(corners=corners):
+                entry, kind = mat_codec.encode_make_trn_tile(corners, mat_codec.MSVCRand(1))
+                decoded = mat_codec.decode_entry(entry)
+                self.assertEqual(kind, 'ambiguous')
+                self.assertEqual((decoded.base, decoded.next), (0,0))
 
-        entry, kind = mat_codec.encode_make_trn_tile((1,0,1,0), mat_codec.MSVCRand(1))
-        decoded = mat_codec.decode_entry(entry)
-        self.assertEqual((decoded.base, decoded.next), (0,0))
-
+    def test_make_trn_three_material_case_collapses_to_material_7(self):
         entry, kind = mat_codec.encode_make_trn_tile((0,1,2,0), mat_codec.MSVCRand(1))
         decoded = mat_codec.decode_entry(entry)
+        self.assertEqual(kind, 'ambiguous')
         self.assertEqual((decoded.base, decoded.next), (7,7))
 
     def test_make_trn_variant_and_mirror_distribution_logic(self):
@@ -135,6 +144,13 @@ class MatCodecTests(unittest.TestCase):
         self.assertEqual((mat_codec.decode_entry(e1).mix, mat_codec.decode_entry(e1).variant), (0,0))
         self.assertEqual((mat_codec.decode_entry(e2).mix, mat_codec.decode_entry(e2).variant), (2,2))
         self.assertEqual((mat_codec.decode_entry(e3).mix, mat_codec.decode_entry(e3).variant), (4,0))
+
+        rng = mat_codec.MSVCRand(1)
+        generated_variants = {
+            mat_codec.decode_entry(mat_codec.encode_make_trn_tile((0,0,0,0), rng)[0]).variant
+            for _ in range(4096)
+        }
+        self.assertEqual(generated_variants, {0,1,2,3})
 
     def test_generate_mat_is_64_by_64_and_transition_validation_does_not_mutate(self):
         heights = np.zeros((256,256), dtype=np.uint16)

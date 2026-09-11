@@ -56,6 +56,26 @@ class HG2CodecTests(unittest.TestCase):
         self.assertEqual(header.shape, (2, 2))
         self.assertTrue(np.array_equal(loaded, heights))
 
+    def test_reader_masks_non_height_high_bits_like_bzmapio(self):
+        zone_bits = 1
+        header = struct.pack(
+            "<HHHHI",
+            HG2_STRUCTURE_VERSION,
+            zone_bits,
+            1,
+            1,
+            HG2_MAP_VERSION,
+        )
+        raw_words = np.array([0xE123, 0xAABC, 0x3FFF, 0x2001], dtype="<u2")
+        expected = raw_words & 0x1FFF
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "masked.hg2"
+            path.write_bytes(header + raw_words.tobytes())
+            _, loaded = read_hg2(path)
+
+        np.testing.assert_array_equal(loaded.reshape(-1), expected)
+
     def test_png16_interchange_is_height_times_eight(self):
         heights = np.array([[0, 1], [4095, HG2_STORAGE_MAX_HEIGHT]], dtype=np.uint16)
         png16 = hg2_to_png16_array(heights)
