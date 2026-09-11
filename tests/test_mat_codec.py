@@ -43,7 +43,6 @@ class MatCodecTests(unittest.TestCase):
         np.testing.assert_array_equal(mat_codec.unpack_mat_zones(payload, 2, 2), grid)
 
     def test_bzmapio_cap_and_diagonal_mix_mapping(self):
-        # Corner order is SW, SE, NE, NW.
         entry, kind = mat_codec.encode_transition_from_corners((0, 1, 1, 0))
         self.assertEqual(kind, "cap")
         self.assertEqual(mat_codec.decode_entry(entry).mix, 6)
@@ -59,11 +58,13 @@ class MatCodecTests(unittest.TestCase):
 
     def test_directional_trn_transition_validation(self):
         entry, kind = mat_codec.encode_transition_from_corners(
-            (1, 1, 1, 0), transitions=frozenset({(0, 1)})
+            (1, 1, 1, 0),
+            diagonal_transitions=frozenset({(0, 1)}),
         )
         self.assertEqual(kind, "unsupported")
         entry, kind = mat_codec.encode_transition_from_corners(
-            (1, 1, 1, 0), transitions=frozenset({(0, 1), (1, 0)})
+            (1, 1, 1, 0),
+            diagonal_transitions=frozenset({(0, 1), (1, 0)}),
         )
         self.assertEqual(kind, "diagonal")
         self.assertEqual(
@@ -71,8 +72,21 @@ class MatCodecTests(unittest.TestCase):
             (1, 0),
         )
 
+    def test_transition_family_is_validated_separately(self):
+        entry, kind = mat_codec.encode_transition_from_corners(
+            (0, 1, 1, 0),
+            cap_transitions=frozenset(),
+            diagonal_transitions=frozenset({(0, 1)}),
+        )
+        self.assertEqual(kind, "unsupported")
+        entry, kind = mat_codec.encode_transition_from_corners(
+            (0, 1, 1, 0),
+            cap_transitions=frozenset({(0, 1)}),
+            diagonal_transitions=frozenset(),
+        )
+        self.assertEqual(kind, "cap")
+
     def test_physical_slope_uses_decimeters_and_sample_spacing(self):
-        # 256 samples/1280m => 5m per sample. 10dm/sample => 1m rise / 5m run.
         row = np.arange(256, dtype=np.float32) * 10.0
         heights = np.tile(row, (256, 1))
         slope = mat_codec.calculate_slope_degrees(heights, 1, 1)
@@ -135,6 +149,8 @@ SolidA0=x.map
         finally:
             os.unlink(path)
         self.assertEqual(config.texture_types, (0, 3))
+        self.assertEqual(config.cap_transitions, frozenset({(0, 3)}))
+        self.assertEqual(config.diagonal_transitions, frozenset({(0, 3)}))
         self.assertEqual(config.transitions, frozenset({(0, 3)}))
         self.assertEqual(len(config.layers), 2)
         self.assertEqual(config.layers[1]["mat_id"], 3)
