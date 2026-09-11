@@ -65,6 +65,54 @@ rounded = (2 * sum + count) / (2 * count)
 
 The HGT fallback return mask requests HG2 output; it does not perform the MAT repaint in the same legacy pass. WorldBuilder's UI deliberately continues through painting after writing the companion HG2 so the user does not need a second operation.
 
+## Interstate '76 MSN + TER import
+
+MakeTRN's working `.MSN` mode was recovered from the executable and is implemented by `msn_ter_codec.py` plus the `msn2terrain.py` frontend.
+
+The `.MSN` file is a size-prefixed chunk stream. MakeTRN searches the top-level stream for a `TDEF` chunk, then searches inside that chunk for `ZMAP`. Each chunk uses:
+
+```text
+char  Tag[4]
+int32 Size        // includes this 8-byte header
+byte  Payload[]
+```
+
+The recovered `ZMAP` payload is:
+
+```text
+uint8 ZoneCount
+uint8 ZoneId[80][80]
+```
+
+`0xFF` means that grid cell contains no terrain. Every other byte identifies one sequential terrain block in the companion `.TER` file.
+
+The `.TER` file contains `ZoneCount` raw blocks. Every block is exactly:
+
+```text
+256 x 256 x uint16 little-endian = 0x20000 bytes
+```
+
+MakeTRN then:
+
+1. finds the smallest occupied rectangle in the 80 x 80 `ZMAP` grid;
+2. allocates a cropped Redux height raster for that rectangle;
+3. scans TER zone IDs in ascending order and uses the first row-major matching `ZMAP` placement;
+4. masks every TER height sample with `0x0FFF`;
+5. copies each 256 x 256 block into its cropped output position;
+6. leaves unassigned cells at zero;
+7. writes TRN `MinX` and `MinZ` from the cropped ZMAP origin in 1280 m units;
+8. writes the normal HG2 and runs the same MakeTRN MAT painter.
+
+WorldBuilder exposes this recovered mode through:
+
+```text
+python msn2terrain.py mission.MSN --output Export --name I76MAP
+```
+
+The companion `.TER` is resolved from the MSN stem by default. `--ter` can override it, and `/p=` / `/e=` aliases are accepted for the recovered MakeTRN layer and empty-elevation controls. `--world` selects the WorldBuilder Redux environment template for the generated TRN. Synthetic TDEF/ZMAP/TER fixtures cover chunk parsing, crop/origin preservation, zone placement, 12-bit masking, missing zone IDs, truncation handling, and end-to-end TRN/HG2/MAT generation.
+
+A real Interstate '76 corpus fixture would still be valuable as an external validation artifact, but the implementation no longer depends on an inferred file layout: the structure above comes directly from the MakeTRN disassembly.
+
 ## Material layers
 
 MakeTRN reserves exactly eight layer slots. A layer has five integer fields:
@@ -189,7 +237,7 @@ The binary then writes its stock Moon environment block (`NormalView`, Moon atla
 
 ## Feature parity implemented in WorldBuilder
 
-The Stock Map Creator and Auto-Painter compatibility path now preserve the useful MakeTRN behavior while clearly separating WorldBuilder extensions:
+The Stock Map Creator, Auto-Painter compatibility core, and legacy conversion frontend now cover every working MakeTRN 2.1.2 terrain-generation path while clearly separating WorldBuilder extensions:
 
 - [x] Redux HG2 depth-8 / 256-sample zones
 - [x] MakeTRN 64 x 64 MAT-per-zone geometry
@@ -205,10 +253,7 @@ The Stock Map Creator and Auto-Painter compatibility path now preserve the usefu
 - [x] stock parameter-file control equivalent to `/p`
 - [x] legacy runtime-random MAT variants by default, with deterministic mode as an extension
 - [x] HGT-to-HG2 compatibility workflow, including recovered interpolation and smoothing
+- [x] Interstate '76 MSN + TER import, including TDEF/ZMAP crop/origin semantics
 - [x] alphanumeric 1-8 character stock map-name validation
 
-## Separate legacy-import gap
-
-MakeTRN's `<name>.MSN` mode is an Interstate '76 conversion path rather than part of blank Stock Map creation. The available `BZ1_Source` tree does not contain a reusable MSN/TER parser or MakeTRN source implementation, and no validated MSN/TER fixtures are currently present in this repository. It is therefore intentionally **not** claimed as implemented here. Adding that mode should be a separate legacy-import task backed by real I76 source files.
-
-The recognized-but-unimplemented MakeTRN 2.1.2 BMP branch and existing-terrain resize branch are not parity requirements; the original binary itself exits with `feature has not been completed`, and WorldBuilder already has stronger image import/resampling facilities.
+The recognized-but-unimplemented MakeTRN 2.1.2 BMP branch and existing-terrain resize branch are **not** parity requirements: the original binary itself exits with `feature has not been completed`, while WorldBuilder already has stronger image import/resampling facilities.
