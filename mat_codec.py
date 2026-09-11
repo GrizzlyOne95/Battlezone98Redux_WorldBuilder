@@ -45,11 +45,16 @@ class PaintStats:
 class TRNPainterConfig:
     layers: tuple[dict, ...]
     texture_types: tuple[int, ...]
-    transitions: frozenset[tuple[int, int]]
+    cap_transitions: frozenset[tuple[int, int]]
+    diagonal_transitions: frozenset[tuple[int, int]]
     min_x: float = 0.0
     min_z: float = 0.0
     width: Optional[float] = None
     depth: Optional[float] = None
+
+    @property
+    def transitions(self) -> frozenset[tuple[int, int]]:
+        return self.cap_transitions | self.diagonal_transitions
 
 
 def _check_range(name: str, value: int, low: int, high: int) -> None:
@@ -66,12 +71,10 @@ def encode_entry(
     variant: int = 0,
     reserved: int = 0,
 ) -> int:
-    """Encode one MAT entry using the documented 16-bit little-endian bitfield.
+    """Encode the documented 16-bit MAT bitfield.
 
-    ``reserved`` exists only for lossless/tolerant decoding of legacy files.
-    New files should leave it at zero. WorldBuilder intentionally generates
-    only the documented four variants (0..3), even though BZMapIO historically
-    treats the whole low nibble as a variant value.
+    Reserved exists for tolerant diagnostics/round-tripping only. New output
+    uses the documented 0..3 variant range and leaves reserved bits clear.
     """
     _check_range("base", base, 0, 15)
     _check_range("next_mat", next_mat, 0, 15)
@@ -134,12 +137,7 @@ def expected_mat_bytes(zones_x: int, zones_z: int) -> int:
 
 
 def pack_mat_zones(entries: np.ndarray, zones_x: int, zones_z: int) -> bytes:
-    """Pack a global MAT grid into Battlezone zone-major storage.
-
-    The input array is indexed [z, x] with row 0 at the south edge. Zones are
-    written southwest first, west-to-east within each zone row, then north.
-    Each 64x64 zone is itself row-major south-to-north.
-    """
+    """Pack a [z,x] grid as southwest-first 64x64 zone blocks."""
     array = np.asarray(entries)
     expected_shape = (zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE)
     if array.shape != expected_shape:
@@ -182,9 +180,8 @@ def unpack_mat_zones(payload: bytes, zones_x: int, zones_z: int) -> np.ndarray:
 
 
 def write_mat(path: os.PathLike | str, entries: np.ndarray, zones_x: int, zones_z: int) -> None:
-    payload = pack_mat_zones(entries, zones_x, zones_z)
     with open(path, "wb") as stream:
-        stream.write(payload)
+        stream.write(pack_mat_zones(entries, zones_x, zones_z))
 
 
 def read_mat(path: os.PathLike | str, zones_x: int, zones_z: int) -> np.ndarray:
@@ -193,7 +190,7 @@ def read_mat(path: os.PathLike | str, zones_x: int, zones_z: int) -> np.ndarray:
 
 
 def calculate_slope_degrees(height_dm: np.ndarray, zones_x: int, zones_z: int) -> np.ndarray:
-    """Return physical terrain slope in degrees from decimeter height samples."""
+    """Calculate physical slope from decimeter heights and 1280m zones."""
     height = np.asarray(height_dm, dtype=np.float32)
     if height.ndim != 2:
         raise ValueError("height data must be a 2-D array")
@@ -201,14 +198,12 @@ def calculate_slope_degrees(height_dm: np.ndarray, zones_x: int, zones_z: int) -
         raise ValueError("zone dimensions must be positive")
     if height.shape[1] % zones_x or height.shape[0] % zones_z:
         raise ValueError("height dimensions are not divisible by zone dimensions")
-
     zone_w = height.shape[1] // zones_x
     zone_h = height.shape[0] // zones_z
     if zone_w != zone_h:
         raise ValueError("Battlezone terrain zones must be square")
     sample_spacing_m = WORLD_ZONE_METERS / float(zone_w)
-    height_m = height * 0.1
-    grad_z, grad_x = np.gradient(height_m, sample_spacing_m, sample_spacing_m)
+    grad_z, grad_x = np.gradient(height * 0.1, sample_spacing_m, sample_spacing_m)
     return np.degrees(np.arctan(np.hypot(grad_x, grad_z)))
 
 
@@ -220,7 +215,7 @@ def _numeric(value: str) -> float:
 
 
 def parse_trn_painter(path: os.PathLike | str) -> TRNPainterConfig:
-    """Parse the TRN portions needed by the procedural MAT painter."""
+    """Parse [LayerN], TextureType transitions, and [Size] for painting."""
     sections: dict[str, list[tuple[str, str]]] = {}
     current = ""
     with open(path, "r", encoding="cp1252", errors="replace") as stream:
@@ -238,7 +233,8 @@ def parse_trn_painter(path: os.PathLike | str) -> TRNPainterConfig:
 
     size_values = {"minx": 0.0, "minz": 0.0, "width": None, "depth": None}
     texture_types: set[int] = set()
-    transitions: set[tuple[int, int]] = set()
+    cap_transitions: set[tuple[int, int]] = set()
+    diagonal_transitions: set[tuple[int, int]] = set()
     layer_rows: list[tuple[int, dict]] = []
 
     for section, items in sections.items():
@@ -258,9 +254,12 @@ def parse_trn_painter(path: os.PathLike | str) -> TRNPainterConfig:
             base = int(tex_match.group(1))
             texture_types.add(base)
             for key, _ in items:
-                trans_match = re.match(r"(?:capto|diagonalto)(\d+)_", key, re.IGNORECASE)
-                if trans_match:
-                    transitions.add((base, int(trans_match.group(1))))
+                cap_match = re.match(r"capto(\d+)_", key, re.IGNORECASE)
+                diag_match = re.match(r"diagonalto(\d+)_", key, re.IGNORECASE)
+                if cap_match:
+                    cap_transitions.add((base, int(cap_match.group(1))))
+                if diag_match:
+                    diagonal_transitions.add((base, int(diag_match.group(1))))
             continue
 
         layer_match = re.fullmatch(r"layer(\d+)", lower)
@@ -274,9 +273,9 @@ def parse_trn_painter(path: os.PathLike | str) -> TRNPainterConfig:
                         int(layer_match.group(1)),
                         {
                             "mat_id": material,
-                            "min_h": _numeric(values.get("elevationstart", "0")),
+                            "min_h": _numeric(values.get("elevationstart", "4095")),
                             "max_h": _numeric(values.get("elevationend", "4095")),
-                            "min_s": _numeric(values.get("slopestart", "0")),
+                            "min_s": _numeric(values.get("slopestart", "90")),
                             "max_s": _numeric(values.get("slopeend", "90")),
                             "mask_path": "",
                         },
@@ -289,7 +288,8 @@ def parse_trn_painter(path: os.PathLike | str) -> TRNPainterConfig:
     return TRNPainterConfig(
         layers=tuple(row for _, row in layer_rows),
         texture_types=tuple(sorted(texture_types)),
-        transitions=frozenset(transitions),
+        cap_transitions=frozenset(cap_transitions),
+        diagonal_transitions=frozenset(diagonal_transitions),
         min_x=float(size_values["minx"] or 0.0),
         min_z=float(size_values["minz"] or 0.0),
         width=size_values["width"],
@@ -302,7 +302,6 @@ def validate_paint_rules(rules: Iterable[dict]) -> list[str]:
     rules = list(rules)
     if not rules:
         return ["No paint rules are defined."]
-
     for i, rule in enumerate(rules):
         try:
             mat_id = int(rule["mat_id"])
@@ -395,14 +394,8 @@ def classify_samples(
             if mask_path.upper().startswith("PATH:"):
                 path_label = mask_path.split(":", 1)[1]
                 mask &= _rasterize_path_mask(
-                    height.shape[0],
-                    height.shape[1],
-                    bzn_paths,
-                    path_label,
-                    min_x,
-                    min_z,
-                    world_width,
-                    world_depth,
+                    height.shape[0], height.shape[1], bzn_paths, path_label,
+                    min_x, min_z, world_width, world_depth,
                 )
             elif os.path.exists(mask_path):
                 mask_img = Image.open(mask_path).convert("L")
@@ -416,18 +409,9 @@ def classify_samples(
     return materials, int(np.size(matched) - np.count_nonzero(matched))
 
 
-_CAP_MIX_BY_SIDE = {
-    "east": 6,
-    "west": 4,
-    "north": 5,
-    "south": 7,
-}
-_DIAG_MIX_BY_CORNER = {
-    "sw": 13,
-    "nw": 14,
-    "ne": 15,
-    "se": 12,
-}
+# Mix IDs derived from BZMapIO's paint-neighbor grouping and UV export mapping.
+_CAP_MIX_BY_SIDE = {"east": 6, "west": 4, "north": 5, "south": 7}
+_DIAG_MIX_BY_CORNER = {"sw": 13, "nw": 14, "ne": 15, "se": 12}
 
 
 def _transition_mix(corners: tuple[int, int, int, int], next_mat: int) -> Optional[int]:
@@ -451,10 +435,11 @@ def _transition_mix(corners: tuple[int, int, int, int], next_mat: int) -> Option
 
 def encode_transition_from_corners(
     corners: tuple[int, int, int, int],
-    transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
+    cap_transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
+    diagonal_transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
     default_material: int = 0,
 ) -> tuple[int, str]:
-    """Encode one MAT tile from quadrant materials ordered SW, SE, NE, NW."""
+    """Encode one MAT tile and validate directional tile families when supplied."""
     unique = sorted(set(int(v) for v in corners))
     if len(unique) == 1:
         material = unique[0]
@@ -463,27 +448,24 @@ def encode_transition_from_corners(
         return encode_mix_entry(default_material, default_material, 0), "ambiguous"
 
     a, b = unique
-    candidates: list[tuple[int, int]] = []
-    if transitions:
-        if (a, b) in transitions:
-            candidates.append((a, b))
-        if (b, a) in transitions:
-            candidates.append((b, a))
-        if not candidates:
-            return encode_mix_entry(default_material, default_material, 0), "unsupported"
-    else:
-        candidates.append((a, b))
-        candidates.append((b, a))
-
-    for base, next_mat in candidates:
+    validating = cap_transitions is not None or diagonal_transitions is not None
+    caps = frozenset(cap_transitions or ())
+    diagonals = frozenset(diagonal_transitions or ())
+    representable = False
+    for base, next_mat in ((a, b), (b, a)):
         mix = _transition_mix(corners, next_mat)
-        if mix is not None:
-            kind = "diagonal" if mix >= 8 else "cap"
-            return encode_mix_entry(base, next_mat, mix), kind
+        if mix is None:
+            continue
+        representable = True
+        kind = "diagonal" if mix >= 8 else "cap"
+        if validating:
+            allowed = diagonals if kind == "diagonal" else caps
+            if (base, next_mat) not in allowed:
+                continue
+        return encode_mix_entry(base, next_mat, mix), kind
 
-    if transitions and any(sum(v == next_mat for v in corners) == 3 for _, next_mat in candidates):
+    if representable and validating:
         return encode_mix_entry(default_material, default_material, 0), "unsupported"
-
     return encode_mix_entry(default_material, default_material, 0), "ambiguous"
 
 
@@ -492,7 +474,8 @@ def generate_mat(
     rules: Iterable[dict],
     zones_x: int,
     zones_z: int,
-    transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
+    cap_transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
+    diagonal_transitions: Optional[set[tuple[int, int]] | frozenset[tuple[int, int]]] = None,
     bzn_paths: Optional[list[dict]] = None,
     min_x: float = 0.0,
     min_z: float = 0.0,
@@ -525,15 +508,8 @@ def generate_mat(
         )
 
     sample_mats, unmatched = classify_samples(
-        height,
-        rules,
-        zones_x,
-        zones_z,
-        bzn_paths=bzn_paths,
-        min_x=min_x,
-        min_z=min_z,
-        world_width=world_width,
-        world_depth=world_depth,
+        height, rules, zones_x, zones_z, bzn_paths=bzn_paths,
+        min_x=min_x, min_z=min_z, world_width=world_width, world_depth=world_depth,
     )
     out = np.empty((zones_z * MAT_ZONE_SIZE, zones_x * MAT_ZONE_SIZE), dtype=np.uint16)
     stats = PaintStats(total_tiles=out.size, unmatched_samples=unmatched)
@@ -552,7 +528,8 @@ def generate_mat(
             )
             entry, kind = encode_transition_from_corners(
                 corners,
-                transitions=transitions,
+                cap_transitions=cap_transitions,
+                diagonal_transitions=diagonal_transitions,
                 default_material=default_material,
             )
             out[mz, mx] = entry
