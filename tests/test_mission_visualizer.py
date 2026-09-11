@@ -12,6 +12,7 @@ from mission_visualizer import (
     hg2_world_size,
     is_binary_bzn,
     parse_binary_bzn_overlay,
+    parse_mission_bzn,
     resolve_companion_hg2,
     resolve_mission_trn,
     world_to_canvas,
@@ -39,11 +40,13 @@ def _binary_bzn_fixture(*, object_count=1):
     data += _bzn_token(4, struct.pack("<i", object_count))
 
     if object_count:
-        data += _bzn_token(7, b"avrecy\x00")
+        # BZNTools documents binary ID fields as an 8-byte payload and BZ1
+        # GameObject labels as a 40-byte CHAR buffer.
+        data += _bzn_token(7, b"avrecy\x00\x00")
         data += _bzn_token(3, struct.pack("<H", 17))
         data += _bzn_token(9, struct.pack("<fff", 640.0, 12.5, 960.0))
         data += _bzn_token(4, struct.pack("<I", 1))
-        data += _bzn_token(2, b"Recycler\x00")
+        data += _bzn_token(2, b"Recycler\x00" + b"\x00" * 31)
         data += _bzn_token(4, struct.pack("<I", 0))
         data += _bzn_token(8, struct.pack("<I", 0x12345678))
         data += _bzn_token(11, struct.pack("<12f", *([0.0] * 12)))
@@ -143,6 +146,21 @@ class MissionVisualizerTests(unittest.TestCase):
             path.write_bytes(_binary_bzn_fixture(object_count=2))
             with self.assertRaisesRegex(ValueError, "header says 2"):
                 parse_binary_bzn_overlay(path)
+
+    def test_dispatch_preserves_existing_ascii_parser(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "mission.bzn"
+            path.write_bytes(b"version [1] =\r\n2016\r\nbinarySave [1] =\r\n0\r\n")
+            calls = []
+
+            def ascii_parser(selected_path):
+                calls.append(Path(selected_path))
+                return ([{"ascii": True}], [])
+
+            objects, paths = parse_mission_bzn(path, ascii_parser)
+            self.assertEqual(calls, [path])
+            self.assertEqual(objects, [{"ascii": True}])
+            self.assertEqual(paths, [])
 
     def test_resolve_trn_prefers_terrain_name_case_insensitively(self):
         with tempfile.TemporaryDirectory() as temp_dir:
