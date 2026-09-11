@@ -109,7 +109,7 @@ jobs:
           ls -lh release-assets
           test "$(stat -c%s release-assets/world-builder-linux)" -gt 1000000
           test "$(stat -c%s release-assets/world-builder-windows.exe)" -gt 1000000
-          test "$(stat -f%z release-assets/world-builder-macos.zip)" -gt 1000000
+          test "$(stat -c%s release-assets/world-builder-macos.zip)" -gt 1000000
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
