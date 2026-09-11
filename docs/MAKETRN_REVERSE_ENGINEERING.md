@@ -51,10 +51,19 @@ The HGT path is legacy 128-samples-per-zone data (10 m per sample). MakeTRN:
 2. validates the raw HGT byte count;
 3. reads 128 x 128 zone blocks;
 4. masks source values to 12 bits (`0x0FFF`);
-5. doubles both axes to the Redux 256-samples-per-zone grid using its interpolation path;
-6. writes an HG2.
+5. doubles both axes to the Redux 256-samples-per-zone grid with a diagonal-triangle interpolation;
+6. runs a 3 x 3 smoothing pass over the interpolated Redux raster;
+7. writes an HG2.
 
-The HGT fallback return mask requests HG2 output; it does not perform the MAT repaint in the same pass. A subsequent TRN/HG2 pass performs painting.
+At the exact half-sample positions used by the 2x conversion, the triangle interpolation reduces to four cases: original sample, horizontal average, vertical average, or the average of the source sample and its down-right diagonal. Right/bottom edges clamp to the current source sample before interpolation.
+
+The smoothing pass uses only in-bounds neighbors (4 at corners, 6 at edges, 9 internally) and positive half-up rounding:
+
+```text
+rounded = (2 * sum + count) / (2 * count)
+```
+
+The HGT fallback return mask requests HG2 output; it does not perform the MAT repaint in the same legacy pass. WorldBuilder's UI deliberately continues through painting after writing the companion HG2 so the user does not need a second operation.
 
 ## Material layers
 
@@ -162,7 +171,7 @@ It then consumes one MSVCR120 `rand()` value per MAT entry. The random value sel
 
 For solid tiles, the random value also supplies the low mix orientation bits. Consequently two MakeTRN runs over identical terrain can produce byte-different MAT files while remaining materially equivalent.
 
-A deterministic seed is useful as a WorldBuilder extension, but it must not be described as the original MakeTRN default.
+WorldBuilder therefore defaults its compatibility path to a runtime seed derived from process CPU time, while retaining deterministic seed `1` as an explicit testing/reproducibility extension.
 
 ## Blank TRN creation
 
@@ -178,9 +187,9 @@ Height = EmptyElevation * 0.1
 
 The binary then writes its stock Moon environment block (`NormalView`, Moon atlas, sky/stars/color and generated `TextureTypeN` entries). WorldBuilder intentionally extends this with selectable Redux world/biome templates, time, audio and lighting controls.
 
-## Feature-parity target for WorldBuilder
+## Feature parity implemented in WorldBuilder
 
-The shipping WorldBuilder should preserve the useful MakeTRN behavior while clearly separating extensions:
+The Stock Map Creator and Auto-Painter compatibility path now preserve the useful MakeTRN behavior while clearly separating WorldBuilder extensions:
 
 - [x] Redux HG2 depth-8 / 256-sample zones
 - [x] MakeTRN 64 x 64 MAT-per-zone geometry
@@ -190,12 +199,16 @@ The shipping WorldBuilder should preserve the useful MakeTRN behavior while clea
 - [x] recovered MAT transition encoding
 - [x] MSVCR120 PRNG implementation
 - [x] TRN transition metadata validation
-- [ ] Stock Map Creator must actually emit MAT
-- [ ] independent stock width/depth controls equivalent to `/w` and `/h`
-- [ ] stock empty-elevation control equivalent to `/e`
-- [ ] stock parameter-file control equivalent to `/p`
-- [ ] legacy runtime-random MAT variants (`srand(clock())`) should be available/default in compatibility mode
-- [ ] preserve/clarify HGT-to-HG2 compatibility workflow
-- [ ] Interstate '76 MSN+TER import remains a separate legacy-import gap until validated against real source files
+- [x] Stock Map Creator emits TRN + HG2 + MAT in one build
+- [x] independent stock width/depth controls equivalent to `/w` and `/h`
+- [x] stock empty-elevation control equivalent to `/e`
+- [x] stock parameter-file control equivalent to `/p`
+- [x] legacy runtime-random MAT variants by default, with deterministic mode as an extension
+- [x] HGT-to-HG2 compatibility workflow, including recovered interpolation and smoothing
+- [x] alphanumeric 1-8 character stock map-name validation
 
-The recognized-but-unimplemented MakeTRN 2.1.2 BMP branch and existing-terrain resize branch are not parity requirements; WorldBuilder already has stronger image import/resampling facilities.
+## Separate legacy-import gap
+
+MakeTRN's `<name>.MSN` mode is an Interstate '76 conversion path rather than part of blank Stock Map creation. The available `BZ1_Source` tree does not contain a reusable MSN/TER parser or MakeTRN source implementation, and no validated MSN/TER fixtures are currently present in this repository. It is therefore intentionally **not** claimed as implemented here. Adding that mode should be a separate legacy-import task backed by real I76 source files.
+
+The recognized-but-unimplemented MakeTRN 2.1.2 BMP branch and existing-terrain resize branch are not parity requirements; the original binary itself exits with `feature has not been completed`, and WorldBuilder already has stronger image import/resampling facilities.
