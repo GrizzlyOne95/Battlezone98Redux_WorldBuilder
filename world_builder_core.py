@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import ctypes
@@ -2099,29 +2100,364 @@ class BZ98TRNArchitect:
         self.btn_legacy_gen.config(text="PROCESSING...", state="disabled")
         threading.Thread(target=self._generate_legacy_worker, args=(src, out), daemon=True).start()
 
+    # ------------------------------------------------------------------
+    #  Legacy (BZ 1.5 -> Redux) conversion helpers
+    # ------------------------------------------------------------------
+
+    # A sky dome / backdrop: opaque, unlit, no depth write.
+    SKY_MAT_TEMPLATE = """material %(mat)s
+{
+\ttechnique
+\t{
+\t\tpass
+\t\t{
+\t\t\tvertex_program_ref Effect_vertex
+\t\t\t{
+\t\t\t}
+\t\t\tfragment_program_ref Effect_fragment
+\t\t\t{
+\t\t\t}
+
+\t\t\tlighting off
+\t\t\tdepth_write off
+\t\t\ttexture_unit
+\t\t\t{
+\t\t\t\ttexture %(tex)s
+\t\t\t}
+\t\t}
+\t}
+}
+"""
+
+    # A cloud layer: same programs as the dome but alpha blended, two sided.
+    CLOUD_MAT_TEMPLATE = """material %(mat)s
+{
+\ttechnique
+\t{
+\t\tpass
+\t\t{
+\t\t\tvertex_program_ref Effect_vertex
+\t\t\t{
+\t\t\t}
+\t\t\tfragment_program_ref Effect_fragment
+\t\t\t{
+\t\t\t}
+
+\t\t\tcull_hardware none
+\t\t\tlighting off
+\t\t\tscene_blend alpha_blend
+\t\t\tdepth_write off
+\t\t\tdiffuse 1 1 1
+\t\t\ttexture_unit
+\t\t\t{
+\t\t\t\ttexture %(tex)s
+\t\t\t}
+\t\t}
+\t}
+}
+"""
+
+    # A [Stars] / [StarList] billboard: planet, moon, milky way.
+    STAR_MAT_TEMPLATE = """material %(mat)s
+{
+\ttechnique
+\t{
+\t\tpass
+\t\t{
+\t\t\tvertex_program_ref Sky_vertex
+\t\t\t{
+\t\t\t}
+\t\t\tfragment_program_ref Sky_fragment
+\t\t\t{
+\t\t\t}
+
+\t\t\tcull_hardware none
+\t\t\tcull_software none
+\t\t\tlighting off
+\t\t\tfog_override true none
+\t\t\tscene_blend %(blend)s
+\t\t\tdepth_write off
+\t\t\tdiffuse vertexcolour
+\t\t\ttexture_unit
+\t\t\t{
+\t\t\t\ttex_address_mode clamp
+\t\t\t\ttexture %(tex)s
+\t\t\t}
+\t\t}
+\t}
+}
+"""
+
+    @staticmethod
+    def _next_pot(n):
+        """Smallest power of two >= n."""
+        n = max(1, int(n))
+        return 1 << (n - 1).bit_length()
+
+    @staticmethod
+    def _find_file_ci(directory, name):
+        """Case-insensitive lookup inside a directory."""
+        low = name.lower()
+        for f in os.listdir(directory):
+            if f.lower() == low:
+                return os.path.join(directory, f)
+        return None
+
+    @staticmethod
+    def _neighbour_count(mask):
+        c = np.zeros(mask.shape, dtype=np.uint8)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                       (1, 1), (1, -1), (-1, 1), (-1, -1)):
+            c += np.roll(np.roll(mask, dy, 0), dx, 1)
+        return c
+
+    def _key_background(self, idx):
+        """Build an alpha mask for a legacy sprite.
+
+        Palette index 0 is the transparent key, but only where it is actually
+        the background: index-0 pixels fully enclosed by the sprite are real
+        black and must stay opaque, or the sprite ends up riddled with holes.
+        So flood fill index 0 inward from the border, then drop the 1px dither
+        fringe those old textures carry around their silhouette.
+        """
+        zero = (idx == 0)
+        bg = np.zeros_like(zero)
+        bg[0, :] |= zero[0, :]
+        bg[-1, :] |= zero[-1, :]
+        bg[:, 0] |= zero[:, 0]
+        bg[:, -1] |= zero[:, -1]
+        while True:
+            grown = bg.copy()
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                grown |= np.roll(np.roll(bg, dy, 0), dx, 1)
+            grown &= zero
+            if (grown == bg).all():
+                break
+            bg = grown
+
+        opaque = ~bg
+        # Morphological opening: erode, then dilate, keeping only what survived.
+        eroded = opaque & (self._neighbour_count(opaque) >= 6)
+        opaque = opaque & (eroded | (self._neighbour_count(eroded) >= 5))
+        return opaque
+
+    def _bleed_rgb(self, rgb, opaque, rounds=6):
+        """Push opaque colour out into the keyed region so that bilinear
+        filtering and mip generation cannot drag the key colour back in as a
+        dark fringe around the sprite."""
+        work = rgb.astype(np.uint16).copy()
+        mask = opaque.copy()
+        for _ in range(rounds):
+            acc = np.zeros_like(work)
+            cnt = np.zeros(mask.shape, dtype=np.uint16)
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1),
+                           (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                acc += (np.roll(np.roll(work, dy, 0), dx, 1)
+                        * np.roll(np.roll(mask, dy, 0), dx, 1)[..., None])
+                cnt += np.roll(np.roll(mask, dy, 0), dx, 1)
+            grow = (~mask) & (cnt > 0)
+            if not grow.any():
+                break
+            work[grow] = acc[grow] // np.maximum(cnt[grow], 1)[..., None]
+            mask |= grow
+        return work.astype(np.uint8)
+
+    def _write_atlas_dds(self, path, cells, grid, tile_px):
+        """Write a DXT1 atlas with a mip chain, matching how the stock Redux
+        terrain atlases are built.
+
+        Each mip level is packed from tiles downsampled *individually*, so a
+        tile never bleeds into its neighbour at low mips. The chain stops once
+        a tile is 4px, which is exactly the 7 levels stock ships for its 4x4
+        256px atlases.
+        """
+        levels = max(1, tile_px.bit_length() - 2)
+        payload = b""
+        for lvl in range(levels):
+            t = tile_px >> lvl
+            dim = grid * t
+            img = Image.new("RGBA", (dim, dim), (0, 0, 0, 255))
+            for gx, gy, tile in cells:
+                sub = tile if t == tile_px else tile.resize((t, t), Image.LANCZOS)
+                img.paste(sub, (gx * t, gy * t))
+            img.putalpha(255)
+            buf = io.BytesIO()
+            img.save(buf, format="DDS", pixel_format="DXT1")
+            payload += buf.getvalue()[128:]
+
+        dim0 = grid * tile_px
+        hdr = bytearray(128)
+        hdr[0:4] = b"DDS "
+        struct.pack_into('<I', hdr, 4, 124)                 # dwSize
+        struct.pack_into('<I', hdr, 8, 0x000A1007)          # CAPS|H|W|PIXELFORMAT|MIPMAPCOUNT|LINEARSIZE
+        struct.pack_into('<I', hdr, 12, dim0)               # dwHeight
+        struct.pack_into('<I', hdr, 16, dim0)               # dwWidth
+        struct.pack_into('<I', hdr, 20, dim0 * dim0 // 2)   # linear size of mip 0
+        struct.pack_into('<I', hdr, 28, levels)             # dwMipMapCount
+        struct.pack_into('<I', hdr, 76, 32)                 # pixelformat dwSize
+        struct.pack_into('<I', hdr, 80, 0x5)                # FOURCC | ALPHAPIXELS
+        hdr[84:88] = b"DXT1"
+        struct.pack_into('<I', hdr, 108, 0x00401008)        # TEXTURE|COMPLEX|MIPMAP
+        with open(path, 'wb') as f:
+            f.write(bytes(hdr))
+            f.write(payload)
+        return levels
+
+    def _parse_trn_textures(self, trn_path):
+        """Pull every .map texture reference out of a legacy .trn, tagged with
+        the kind of material Redux needs for it."""
+        wanted = []
+        section = ""
+        pending = []
+        with open(trn_path, 'r', errors='ignore') as f:
+            for raw in f:
+                line = raw.split('//')[0].strip()
+                if not line:
+                    continue
+                if line.startswith('[') and ']' in line:
+                    section = line[1:line.index(']')].strip().lower()
+                    continue
+                if '=' not in line:
+                    continue
+                key, val = line.split('=', 1)
+                key, val = key.strip(), val.strip()
+                if not val:
+                    continue
+                if not val.lower().endswith('.map'):
+                    continue
+                if section == 'sky':
+                    if re.match(r'^(Sky|Backdrop|Sun)Texture$', key, re.IGNORECASE):
+                        wanted.append((val, 'sky', None))
+                elif section == 'clouds':
+                    if re.match(r'^Texture\d+$', key, re.IGNORECASE):
+                        wanted.append((val, 'cloud', None))
+                elif section == 'stars':
+                    m = re.match(r'^Texture(\d+)$', key, re.IGNORECASE)
+                    if m:
+                        pending.append((val, m.group(1)))
+                elif section == 'starlist':
+                    if key.lower() == 'texture':
+                        wanted.append((val, 'star', 'alpha_blend'))
+
+        for val, _num in pending:
+            # Every stock [Stars] planet material (earth, milkyway, saturn,
+            # smjovian) is additive. That is what makes a body read as a pale
+            # disc hanging in a lit daytime sky rather than a sticker pasted
+            # over it, so ignore the TRN's Alpha flag and follow stock.
+            # [StarList] is the little star field and alpha blends, as stock
+            # stars.material does.
+            wanted.append((val, 'star', 'src_alpha one'))
+
+        seen = set()
+        out = []
+        for val, kind, blend in wanted:
+            if val.lower() in seen:
+                continue
+            seen.add(val.lower())
+            out.append((val, kind, blend))
+        return out
+
+    def _convert_sky_textures(self, src, out, pal, atlas_names):
+        """Convert the sky / cloud / star .MAPs a .trn references into PNGs
+        plus the Ogre materials Redux looks them up by.
+
+        Redux resolves these by material NAME, which is the .map filename from
+        the .trn -- so the emitted material is literally `material EARTH2.MAP`.
+        Only textures that actually ship in the source folder are converted;
+        anything else (acloud.map, stars.map, sun.0 ...) is stock and already
+        has a material, which we must not shadow.
+        """
+        trns = [f for f in os.listdir(src) if f.lower().endswith('.trn')]
+        if not trns:
+            self.log("No .trn in source folder - skipping sky/star materials.", "warning")
+            return 0
+
+        made = 0
+        for name, kind, blend in self._parse_trn_textures(os.path.join(src, trns[0])):
+            path = self._find_file_ci(src, name)
+            if not path:
+                self.log(f"  {name} ({kind}) not in source folder - assuming stock.", "info")
+                continue
+            img = self.read_bz_map(path, pal)
+            if img is None:
+                self.log(f"  {name} could not be decoded.", "error")
+                continue
+
+            stem = os.path.splitext(os.path.basename(path))[0].lower()
+            # A tile that is also packed into the terrain atlas needs a
+            # distinct texture filename so the two uses stay separate.
+            png_stem = stem + "_sky" if stem in atlas_names else stem
+            png_name = png_stem + ".png"
+
+            rgb = np.asarray(img.convert("RGB"))
+            if kind == 'sky':
+                Image.fromarray(rgb, "RGB").save(os.path.join(out, png_name))
+            else:
+                with open(path, 'rb') as f:
+                    rb, fmt, h, _ = struct.unpack('<4H', f.read(8))
+                    data = f.read()
+                w = rb // BZMapFormat.bpp[fmt]
+                idx = np.frombuffer(data[:w * h], dtype=np.uint8).reshape(h, w)[::-1]
+                opaque = self._key_background(idx)
+                bled = self._bleed_rgb(rgb, opaque)
+                alpha = np.where(opaque, 255, 0).astype(np.uint8)
+                Image.fromarray(np.dstack([bled, alpha]), "RGBA").save(
+                    os.path.join(out, png_name))
+
+            mat_name = os.path.basename(path).upper()
+            if not mat_name.upper().endswith('.MAP'):
+                mat_name += '.MAP'
+            if kind == 'sky':
+                body = self.SKY_MAT_TEMPLATE % {"mat": mat_name, "tex": png_name}
+            elif kind == 'cloud':
+                body = self.CLOUD_MAT_TEMPLATE % {"mat": mat_name, "tex": png_name}
+            else:
+                body = self.STAR_MAT_TEMPLATE % {"mat": mat_name, "tex": png_name,
+                                                 "blend": blend}
+            header = (f"// Generated by World Builder from {os.path.basename(path)}\n"
+                      f"// Redux looks this up by material name, which must stay "
+                      f"equal to the .map the .trn references.\n")
+            with open(os.path.join(out, png_stem + ".material"), 'w', newline='\n') as f:
+                f.write(header + body)
+
+            self.log(f"  {os.path.basename(path)} -> {png_name} "
+                     f"(material {mat_name}, {kind})", "success")
+            made += 1
+        return made
+
     def _generate_legacy_worker(self, src, out):
         try:
             # 1. Find Files
-            files = [f for f in os.listdir(src) if f.lower().endswith(('0.map', '0.bmp', '0.png'))]
+            files = sorted(f for f in os.listdir(src)
+                           if f.lower().endswith(('0.map', '0.bmp', '0.png')))
             if not files:
                 self.log("No matching legacy files found (must end in 0.map, 0.bmp, or 0.png).", "warning")
                 return
 
-            # Load Palette if provided
+            # Palette: explicit choice wins, else take the one the .trn names.
             pal = BUILTIN_MOON_PALETTE
             pal_path = self.legacy_pal_path.get()
+            if not (pal_path and os.path.exists(pal_path)):
+                trns = [f for f in os.listdir(src) if f.lower().endswith('.trn')]
+                if trns:
+                    with open(os.path.join(src, trns[0]), 'r', errors='ignore') as f:
+                        m = re.search(r'Palette\s*=\s*([^\s\n\r]+)', f.read(), re.IGNORECASE)
+                    if m:
+                        cand = self._find_file_ci(src, m.group(1).strip())
+                        if cand:
+                            pal_path = cand
+                            self.log(f"Palette taken from {trns[0]}: {os.path.basename(cand)}", "info")
             if pal_path and os.path.exists(pal_path):
                 with open(pal_path, 'rb') as f:
                     raw = f.read(768)
-                    pal = [list(struct.unpack('<3B', raw[i:i+3])) for i in range(0, 768, 3)]
+                    pal = [list(struct.unpack('<3B', raw[i:i + 3])) for i in range(0, 768, 3)]
+            else:
+                self.log("No .ACT palette found - falling back to the built-in Moon palette.", "warning")
 
-            images = []
-            names = []
-            
-            # Regex for TRN parsing: Prefix(2), From(1), To(1), Kind(1), Var(1), Mip(1)
+            images, names = [], []
             name_pattern = re.compile(r'^([a-zA-Z]{2})(\d)(\d)([scd])([a-zA-Z])0$', re.IGNORECASE)
             trn_data = {}
-            
+
             for f in files:
                 path = os.path.join(src, f)
                 try:
@@ -2129,91 +2465,93 @@ class BZ98TRNArchitect:
                         img = self.read_bz_map(path, pal)
                     else:
                         img = Image.open(path).convert("RGBA")
-                    
-                    if img:
-                        images.append(img)
-                        root_name = os.path.splitext(f)[0]
-                        names.append(root_name)
-                        
-                        # TRN Entry Generation
-                        match = name_pattern.match(root_name)
-                        if match:
-                            _, t_from, t_to, kind, var = match.groups()
-                            t_from = int(t_from)
-                            if t_from not in trn_data: trn_data[t_from] = []
-                            
-                            key = ""
-                            k_lower = kind.lower()
-                            v_upper = var.upper()
-                            
-                            if k_lower == 's':
-                                key = f"Solid{v_upper}0"
-                            elif k_lower == 'c':
-                                key = f"CapTo{t_to}_{v_upper}0"
-                            elif k_lower == 'd':
-                                key = f"DiagonalTo{t_to}_{v_upper}0"
-                            
-                            if key:
-                                trn_data[t_from].append(f"{key:<15} = {root_name.upper()}.MAP")
+                    if not img:
+                        continue
+                    images.append(img)
+                    root_name = os.path.splitext(f)[0]
+                    names.append(root_name)
+
+                    match = name_pattern.match(root_name)
+                    if not match:
+                        self.log(f"{f} does not look like a terrain tile - packed, "
+                                 f"but no TRN entry written.", "warning")
+                        continue
+                    _, t_from, t_to, kind, var = match.groups()
+                    t_from = int(t_from)
+                    trn_data.setdefault(t_from, [])
+                    k_lower, v_upper = kind.lower(), var.upper()
+                    if k_lower == 's':
+                        key = f"Solid{v_upper}0"
+                    elif k_lower == 'c':
+                        key = f"CapTo{t_to}_{v_upper}0"
+                    else:
+                        key = f"DiagonalTo{t_to}_{v_upper}0"
+                    trn_data[t_from].append(f"{key:<15} = {root_name.upper()}.MAP")
                 except Exception as e:
                     self.log(f"Failed to load {f}: {e}", "error")
 
-            if not images: return
+            if not images:
+                return
 
-            # 2. Atlas Packing (Grid)
+            # 2. Atlas packing. Round the grid up to a power of two so the
+            #    atlas is POT and the mip chain divides cleanly -- a 4x4 grid
+            #    of 256px tiles is exactly what stock Redux ships.
             count = len(images)
-            gs = math.ceil(math.sqrt(count))
-            
-            # Assume uniform size based on first image
+            gs = self._next_pot(math.ceil(math.sqrt(count)))
             w, h = images[0].size
             atlas_size = gs * w
-            
-            atlas = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
+
             uv_step = 1.0 / gs
             csv_lines = [f",0,0,{uv_step:.6g},{uv_step:.6g}"]
-            
-            prefix = self.legacy_prefix.get()
-            
+            cells = []
             for idx, (img, name) in enumerate(zip(images, names)):
                 gx, gy = idx % gs, idx // gs
-                px, py = gx * w, gy * h
-                
-                # Resize if mismatch
-                if img.size != (w, h): img = img.resize((w, h))
-                
-                atlas.paste(img, (px, py))
-                
-                # CSV Entry
+                if img.size != (w, h):
+                    img = img.resize((w, h))
+                cells.append((gx, gy, img.convert("RGBA")))
                 u, v = gx * uv_step, gy * uv_step
                 csv_lines.append(f"{name.upper()}.MAP,{u:.6g},{v:.6g},{uv_step:.6g},{uv_step:.6g}")
 
-            # 3. Save Outputs
-            if not os.path.exists(out): os.makedirs(out)
-            
-            # Save Atlas
+            if not os.path.exists(out):
+                os.makedirs(out)
+
+            prefix = self.legacy_prefix.get()
+            mat_stem = f"{prefix}_detail_atlas"
             ext = self.legacy_format.get()
-            atlas.save(os.path.join(out, f"{prefix}_atlas{ext}"))
-            
-            # Save CSV
-            with open(os.path.join(out, f"{prefix}_mapping.csv"), "w") as f:
-                f.write("\n".join(csv_lines))
-                
-            # Save TRN Entries
-            with open(os.path.join(out, "TRN_Entries.txt"), "w") as f:
+            atlas_file = f"{prefix}_atlas{ext}"
+
+            if ext.lower() == ".dds":
+                levels = self._write_atlas_dds(os.path.join(out, atlas_file), cells, gs, w)
+                self.log(f"Atlas: {atlas_size}x{atlas_size} DXT1, {levels} mip levels.", "info")
+            else:
+                flat = Image.new("RGBA", (atlas_size, atlas_size), (0, 0, 0, 0))
+                for gx, gy, tile in cells:
+                    flat.paste(tile, (gx * w, gy * h))
+                flat.save(os.path.join(out, atlas_file))
+                self.log(f"Atlas: {atlas_size}x{atlas_size} PNG (no mips).", "info")
+
+            # 3. CSV -- Redux looks for <MaterialName>.csv, so the stem has to
+            #    match the material, not be a separate "_mapping" name.
+            with open(os.path.join(out, f"{mat_stem}.csv"), "w", newline='\n') as f:
+                f.write("\n".join(csv_lines) + "\n")
+
+            # 4. TRN entries, led by the [Atlases] block that binds the map to
+            #    the generated material. Without it the terrain never draws.
+            with open(os.path.join(out, "TRN_Entries.txt"), "w", newline='\n') as f:
+                f.write("; Paste into your .trn. The [Atlases] block is required:\n")
+                f.write("; it is what points the terrain at the generated material.\n\n")
+                f.write("[Atlases]\n")
+                f.write(f"MaterialName\t= {mat_stem}\n\n")
                 for t_idx in sorted(trn_data.keys()):
                     f.write(f"[TextureType{t_idx}]\n")
                     for line in sorted(trn_data[t_idx]):
                         f.write(f"{line}\n")
                     f.write("\n")
-            
-            # Save Material File
-            mat_name = f"{prefix}_DETAIL_ATLAS".upper()
-            mat_file = f"{prefix}_detail_atlas.material"
-            atlas_file = f"{prefix}_atlas{ext}"
-            
-            with open(os.path.join(out, mat_file), "w") as f:
+
+            # 5. Terrain material.
+            with open(os.path.join(out, f"{mat_stem}.material"), "w", newline='\n') as f:
                 f.write('import * from "BZTerrainBase.material"\n\n')
-                f.write(f'material {mat_name} : BZTerrainBase\n{{\n')
+                f.write(f'material {mat_stem.upper()} : BZTerrainBase\n{{\n')
                 f.write(f'\tset_texture_alias DiffuseMap {atlas_file}\n')
                 f.write(f'\t//set_texture_alias DetailMap {prefix}_detail.dds\n')
                 f.write(f'\tset_texture_alias NormalMap flat_n.dds\n')
@@ -2222,9 +2560,17 @@ class BZ98TRNArchitect:
                 f.write(f'\tset $ambient "1 1 1"\n')
                 f.write(f'\tset $specular ".25 .25 .25"\n')
                 f.write(f'\tset $shininess "63"\n')
+                f.write(f'\tset $bias "0"\n')
                 f.write('}\n')
-                
-            self.log(f"Legacy Conversion Complete: {count} tiles packed into {atlas_size}x{atlas_size} atlas.", "success")
+
+            self.log(f"Legacy Conversion Complete: {count} tiles packed into "
+                     f"{atlas_size}x{atlas_size} atlas ({gs}x{gs} grid).", "success")
+
+            # 6. Sky, cloud and star textures referenced by the .trn.
+            atlas_names = {n.lower() for n in names}
+            made = self._convert_sky_textures(src, out, pal, atlas_names)
+            if made:
+                self.log(f"Converted {made} sky/cloud/star texture(s) with materials.", "success")
 
         except Exception as e:
             self.log(f"Legacy Error: {e}", "error")
@@ -2878,7 +3224,13 @@ class BZ98TRNArchitect:
                     img = img.convert("RGBA")
             else:
                  img = Image.frombytes('RGBA', (w, h), data, 'raw', 'BGRA')
-            return img
+
+            # BZ .MAP scanlines are stored bottom-up (DIB order), but frombytes
+            # fills top-down. Without this flip every tile lands mirrored: solids
+            # look fine (noise is symmetric) but caps/diagonals end up with their
+            # transition on the N/NE edge instead of the S/SE edge that the Redux
+            # terrain renderer rotates from, so no transition lines up in game.
+            return img.transpose(Image.FLIP_TOP_BOTTOM)
 
     def generate_cube_face(self, img, face_idx, res, order=3):
         grid = np.linspace(-1 + (1/res), 1 - (1/res), res)
