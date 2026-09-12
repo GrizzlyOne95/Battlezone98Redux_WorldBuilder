@@ -2548,13 +2548,28 @@ class BZ98TRNArchitect:
                         f.write(f"{line}\n")
                     f.write("\n")
 
-            # 5. Terrain material.
+            # 5. A neutral detail/specular map.
+            #
+            #    BZTerrainBase defaults DetailMap and SpecularMap to white.png,
+            #    and the terrain shader computes `detailMap.Sample(...) * 2`.
+            #    Leaving them unset therefore means a detail factor of 2.0 and
+            #    full specular: the terrain renders at double brightness up
+            #    close, fading with distance via saturate(depth * 0.025), so it
+            #    reads as a blown-out near band. Every stock atlas ships detail
+            #    and specular maps averaging 0.5, i.e. exactly neutral through
+            #    that *2. A legacy tile set has no such data, so emit a flat 50%
+            #    grey and bind it to both.
+            neutral_name = f"{prefix}_neutral.png"
+            Image.new("RGB", (8, 8), (128, 128, 128)).save(os.path.join(out, neutral_name))
+
+            # 6. Terrain material.
             with open(os.path.join(out, f"{mat_stem}.material"), "w", newline='\n') as f:
                 f.write('import * from "BZTerrainBase.material"\n\n')
                 f.write(f'material {mat_stem.upper()} : BZTerrainBase\n{{\n')
                 f.write(f'\tset_texture_alias DiffuseMap {atlas_file}\n')
-                f.write(f'\t//set_texture_alias DetailMap {prefix}_detail.dds\n')
+                f.write(f'\tset_texture_alias DetailMap {neutral_name}\n')
                 f.write(f'\tset_texture_alias NormalMap flat_n.dds\n')
+                f.write(f'\tset_texture_alias SpecularMap {neutral_name}\n')
                 f.write(f'\tset_texture_alias EmissiveMap black.dds\n\n')
                 f.write(f'\tset $diffuse "1 1 1"\n')
                 f.write(f'\tset $ambient "1 1 1"\n')
@@ -2566,7 +2581,7 @@ class BZ98TRNArchitect:
             self.log(f"Legacy Conversion Complete: {count} tiles packed into "
                      f"{atlas_size}x{atlas_size} atlas ({gs}x{gs} grid).", "success")
 
-            # 6. Sky, cloud and star textures referenced by the .trn.
+            # 7. Sky, cloud and star textures referenced by the .trn.
             atlas_names = {n.lower() for n in names}
             made = self._convert_sky_textures(src, out, pal, atlas_names)
             if made:
