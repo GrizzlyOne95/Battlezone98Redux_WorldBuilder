@@ -27,6 +27,8 @@ Creating a custom atlas with manually painted transitions can be very time consu
 ## Legacy Atlas Creator
 Ports custom worlds from 1.5 format into Redux. Auto converts the .MAP files into an atlas, and exports the proper TRN, CSV, Material.
 
+The Legacy Atlas page also includes an **authored HGT -> Redux HG2** terrain upgrader. Select the original `.hgt`; WorldBuilder reads the companion `.trn` dimensions, preserves the low 12-bit legacy height samples and zone ordering, performs the recovered 128 -> 256 samples-per-zone triangle interpolation, and writes a canonical Redux `.hg2`. It deliberately skips the post-upgrade 3x3 smoothing pass, matching the terrain-upgrade behavior requested by Redux's `-nohgtsmoothing` launch option. No Gaussian filtering or height renormalization is applied.
+
 <img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-b81d-e146e3d4d908" />
 
 ## Heightmap Converter
