@@ -134,6 +134,37 @@ class MakeTRNCompatTests(unittest.TestCase):
         np.testing.assert_array_equal(raw, maketrn_compat.interpolate_hgt_to_hg2(legacy))
         self.assertFalse(np.array_equal(raw, smoothed))
 
+    def test_bulk_folder_conversion_pairs_same_stem_trns(self):
+        zone_size = maketrn_compat.HGT_SAMPLES_PER_ZONE
+        a = np.full((zone_size, zone_size), 111, dtype=np.uint16)
+        b = np.full((zone_size, zone_size), 222, dtype=np.uint16)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "source"
+            out = Path(tmp) / "output"
+            src.mkdir()
+            (src / "mission01.hgt").write_bytes(a.astype('<u2').tobytes())
+            (src / "mission02.hgt").write_bytes(b.astype('<u2').tobytes())
+            (src / "mission01.trn").write_text("[Size]\nWidth=1280\nDepth=1280\n", encoding="ascii")
+            (src / "mission02.trn").write_text("[Size]\nWidth=1280\nDepth=1280\n", encoding="ascii")
+
+            results = maketrn_compat.convert_legacy_hgt_folder_no_smoothing(src, out)
+            _, hg2_a = read_hg2(out / "mission01.hg2")
+            _, hg2_b = read_hg2(out / "mission02.hg2")
+
+        self.assertEqual([Path(result.hgt_path).stem for result in results], ["mission01", "mission02"])
+        self.assertTrue(np.all(hg2_a == 111))
+        self.assertTrue(np.all(hg2_b == 222))
+
+    def test_bulk_pairing_rejects_ambiguous_trn_without_same_stem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            (src / "mission.hgt").write_bytes(b"\x00\x00")
+            (src / "alpha.trn").write_text("[Size]\nWidth=1280\nDepth=1280\n", encoding="ascii")
+            (src / "beta.trn").write_text("[Size]\nWidth=1280\nDepth=1280\n", encoding="ascii")
+            with self.assertRaisesRegex(ValueError, "Multiple TRNs"):
+                maketrn_compat.resolve_legacy_hgt_trn(src / "mission.hgt", src)
+
 
 if __name__ == '__main__':
     unittest.main()
