@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -23,6 +24,17 @@ class StockGeometry:
     depth_meters: int
     zones_x: int
     zones_z: int
+
+
+@dataclass(frozen=True)
+class LegacyHGTConversion:
+    hgt_path: str
+    trn_path: str
+    hg2_path: str
+    zones_x: int
+    zones_z: int
+    min_height: int
+    max_height: int
 
 
 def normalize_make_trn_dimension(meters: int) -> int:
@@ -238,13 +250,125 @@ def convert_hgt_to_hg2_no_smoothing(
     return heights
 
 
-def _install_world_builder_legacy_hgt_ui_patch() -> None:
-    """Attach the converter to the existing Legacy Atlas page when available.
+def read_legacy_trn_zone_geometry(trn_path: os.PathLike | str) -> tuple[int, int]:
+    """Read legacy TRN Width/Depth and return exact 1280 m terrain zones."""
+    width = None
+    depth = None
+    with open(trn_path, "r", errors="ignore") as stream:
+        for raw in stream:
+            line = raw.split("//", 1)[0].split(";", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            if key.lower() == "width":
+                try:
+                    width = float(value.rstrip("fF"))
+                except ValueError:
+                    pass
+            elif key.lower() == "depth":
+                try:
+                    depth = float(value.rstrip("fF"))
+                except ValueError:
+                    pass
 
-    `world_builder.py` imports this module after `world_builder_core`, before the
-    application instance is constructed. Wrapping the base setup method keeps
-    the feature isolated here while preserving the existing Legacy Atlas UI.
-    Unit-test imports do not load `world_builder_core`, so they remain headless.
+    if not width or not depth:
+        raise ValueError(f"{os.path.basename(str(trn_path))} does not define Width and Depth")
+
+    zones_x_f = width / METERS_PER_ZONE
+    zones_z_f = depth / METERS_PER_ZONE
+    zones_x = int(round(zones_x_f))
+    zones_z = int(round(zones_z_f))
+    if (
+        zones_x <= 0
+        or zones_z <= 0
+        or abs(zones_x_f - zones_x) > 1e-6
+        or abs(zones_z_f - zones_z) > 1e-6
+    ):
+        raise ValueError(
+            f"{os.path.basename(str(trn_path))} Width/Depth must be exact {METERS_PER_ZONE} m zone multiples"
+        )
+    return zones_x, zones_z
+
+
+def resolve_legacy_hgt_trn(hgt_path: os.PathLike | str, source_dir: os.PathLike | str | None = None) -> str:
+    """Resolve the terrain TRN for an authored HGT.
+
+    Prefer a same-stem TRN. If that does not exist and the source folder has
+    exactly one TRN, use it as the unambiguous world-level fallback.
+    """
+    hgt_path = os.fspath(hgt_path)
+    directory = os.fspath(source_dir) if source_dir is not None else os.path.dirname(hgt_path)
+    same_stem = os.path.splitext(hgt_path)[0] + ".trn"
+    if os.path.isfile(same_stem):
+        return same_stem
+
+    trns = sorted(
+        os.path.join(directory, name)
+        for name in os.listdir(directory)
+        if name.lower().endswith(".trn") and os.path.isfile(os.path.join(directory, name))
+    )
+    if len(trns) == 1:
+        return trns[0]
+    if not trns:
+        raise ValueError(f"No companion TRN found for {os.path.basename(hgt_path)}")
+    raise ValueError(
+        f"Multiple TRNs found for {os.path.basename(hgt_path)}; add a same-stem TRN to disambiguate"
+    )
+
+
+def convert_legacy_hgt_folder_no_smoothing(
+    source_dir: os.PathLike | str,
+    output_dir: os.PathLike | str,
+) -> list[LegacyHGTConversion]:
+    """Port every legacy HGT in a world folder to canonical Redux HG2.
+
+    This is intended as the terrain half of the Legacy Atlas port workflow, so
+    an old map folder can be converted without first launching Redux and
+    letting the game upgrade each HGT itself.
+    """
+    source_dir = os.fspath(source_dir)
+    output_dir = os.fspath(output_dir)
+    hgts = sorted(
+        os.path.join(source_dir, name)
+        for name in os.listdir(source_dir)
+        if name.lower().endswith(".hgt") and os.path.isfile(os.path.join(source_dir, name))
+    )
+    if not hgts:
+        return []
+
+    os.makedirs(output_dir, exist_ok=True)
+    results: list[LegacyHGTConversion] = []
+    for hgt_path in hgts:
+        trn_path = resolve_legacy_hgt_trn(hgt_path, source_dir)
+        zones_x, zones_z = read_legacy_trn_zone_geometry(trn_path)
+        stem = os.path.splitext(os.path.basename(hgt_path))[0]
+        hg2_path = os.path.join(output_dir, stem + ".hg2")
+        heights = convert_hgt_to_hg2_no_smoothing(
+            hgt_path,
+            hg2_path,
+            zones_x,
+            zones_z,
+        )
+        results.append(
+            LegacyHGTConversion(
+                hgt_path=hgt_path,
+                trn_path=trn_path,
+                hg2_path=hg2_path,
+                zones_x=zones_x,
+                zones_z=zones_z,
+                min_height=int(heights.min()),
+                max_height=int(heights.max()),
+            )
+        )
+    return results
+
+
+def _install_world_builder_legacy_hgt_ui_patch() -> None:
+    """Integrate HGT terrain upgrading into WorldBuilder's Legacy Atlas page.
+
+    Normal porting is one-click: the existing Convert & Build Atlas worker also
+    converts every authored HGT in the selected source folder. A manual single
+    HGT button remains available as an advanced fallback.
     """
     core = sys.modules.get("world_builder_core")
     if core is None:
@@ -254,21 +378,46 @@ def _install_world_builder_legacy_hgt_ui_patch() -> None:
         return
 
     original_setup = base.setup_legacy_tab
+    original_worker = base._generate_legacy_worker
+    original_scan = base.scan_legacy_folder
 
     def setup_legacy_tab_with_hgt(self):
         original_setup(self)
 
+        self.legacy_auto_hgt = core.tk.BooleanVar(value=True)
         self.legacy_hgt_path = core.tk.StringVar()
         self.legacy_hgt_info = core.tk.StringVar(
-            value="Select an authored BZ 1.5 .HGT. Companion .TRN dimensions are used automatically."
+            value="HGT terrain upgrade: waiting for a legacy source folder."
         )
 
         frame = core.ttk.LabelFrame(
             self.tab_legacy,
-            text=" Legacy Terrain Upgrade (.HGT -> .HG2, no smoothing) ",
+            text=" Legacy Terrain Upgrade (.HGT -> .HG2) ",
             padding=10,
         )
         frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        core.ttk.Checkbutton(
+            frame,
+            text="Automatically convert authored HGT terrain during CONVERT & BUILD ATLAS",
+            variable=self.legacy_auto_hgt,
+        ).pack(anchor="w")
+        core.ttk.Label(
+            frame,
+            text=(
+                "Uses Redux-equivalent -nohgtsmoothing upgrade semantics: low 12-bit HGT heights, "
+                "zone-major layout, recovered 128->256 triangle interpolation, canonical HG2 output. "
+                "No 3x3 smoothing, Gaussian filter, or height renormalization."
+            ),
+            foreground="#888888",
+            wraplength=1050,
+        ).pack(anchor="w", pady=(3, 5))
+        core.ttk.Label(
+            frame,
+            textvariable=self.legacy_hgt_info,
+            foreground=core.BZ_CYAN,
+            font=("Consolas", 9),
+        ).pack(anchor="w", pady=(0, 6))
 
         row = core.ttk.Frame(frame)
         row.pack(fill="x")
@@ -283,71 +432,30 @@ def _install_world_builder_legacy_hgt_ui_patch() -> None:
             if not path:
                 return
             self.legacy_hgt_path.set(path)
-            trn_path = os.path.splitext(path)[0] + ".trn"
-            trn = core.TRNParser.parse(trn_path)
-            if trn.get("Width") and trn.get("Depth"):
-                try:
-                    zones_x = int(round(float(trn["Width"]) / METERS_PER_ZONE))
-                    zones_z = int(round(float(trn["Depth"]) / METERS_PER_ZONE))
-                    expected = zones_x * zones_z * HGT_SAMPLES_PER_ZONE * HGT_SAMPLES_PER_ZONE * 2
-                    actual = os.path.getsize(path)
-                    suffix = "" if actual == expected else f" | WARNING size {actual}, expected {expected}"
-                    self.legacy_hgt_info.set(
-                        f"{os.path.basename(trn_path)}: {zones_x}x{zones_z} zones -> "
-                        f"{zones_x * HG2_SAMPLES_PER_ZONE}x{zones_z * HG2_SAMPLES_PER_ZONE} HG2{suffix}"
-                    )
-                except Exception as exc:
-                    self.legacy_hgt_info.set(f"Could not validate companion TRN: {exc}")
-            else:
-                self.legacy_hgt_info.set("Companion .TRN with [Size] Width/Depth is required.")
-
-        core.ttk.Button(row, text="Browse HGT", command=browse_hgt).pack(side="left")
-        core.ttk.Label(
-            frame,
-            textvariable=self.legacy_hgt_info,
-            foreground=core.BZ_CYAN,
-            font=("Consolas", 9),
-        ).pack(anchor="w", pady=(5, 5))
-        core.ttk.Label(
-            frame,
-            text=(
-                "Matches Redux legacy terrain upgrading with -nohgtsmoothing: "
-                "12-bit HGT samples -> recovered 2x triangle interpolation -> HG2. "
-                "No 3x3 smoothing, Gaussian filtering, or height renormalization."
-            ),
-            foreground="#888888",
-            wraplength=1050,
-        ).pack(anchor="w", pady=(0, 7))
+            try:
+                trn_path = resolve_legacy_hgt_trn(path)
+                zones_x, zones_z = read_legacy_trn_zone_geometry(trn_path)
+                expected = zones_x * zones_z * HGT_SAMPLES_PER_ZONE * HGT_SAMPLES_PER_ZONE * 2
+                actual = os.path.getsize(path)
+                suffix = "" if actual == expected else f" | WARNING size {actual}, expected {expected}"
+                self.legacy_hgt_info.set(
+                    f"Manual: {os.path.basename(path)} + {os.path.basename(trn_path)} | "
+                    f"{zones_x}x{zones_z} zones -> "
+                    f"{zones_x * HG2_SAMPLES_PER_ZONE}x{zones_z * HG2_SAMPLES_PER_ZONE} HG2{suffix}"
+                )
+            except Exception as exc:
+                self.legacy_hgt_info.set(str(exc))
 
         def convert_selected_hgt():
             hgt_path = self.legacy_hgt_path.get().strip()
             if not hgt_path or not os.path.isfile(hgt_path):
                 core.messagebox.showerror("Legacy HGT", "Select a valid .HGT file first.")
                 return
-            trn_path = os.path.splitext(hgt_path)[0] + ".trn"
-            trn = core.TRNParser.parse(trn_path)
-            width = trn.get("Width")
-            depth = trn.get("Depth")
-            if not width or not depth:
-                core.messagebox.showerror(
-                    "Legacy HGT",
-                    "A companion .TRN with [Size] Width and Depth is required to determine HGT zone dimensions.",
-                )
-                return
-            zones_x_f = float(width) / METERS_PER_ZONE
-            zones_z_f = float(depth) / METERS_PER_ZONE
-            zones_x = int(round(zones_x_f))
-            zones_z = int(round(zones_z_f))
-            if (
-                zones_x <= 0
-                or zones_z <= 0
-                or abs(zones_x_f - zones_x) > 1e-6
-                or abs(zones_z_f - zones_z) > 1e-6
-            ):
-                core.messagebox.showerror(
-                    "Legacy HGT",
-                    "Companion TRN Width/Depth must be exact 1280 m terrain-zone multiples.",
-                )
+            try:
+                trn_path = resolve_legacy_hgt_trn(hgt_path)
+                zones_x, zones_z = read_legacy_trn_zone_geometry(trn_path)
+            except Exception as exc:
+                core.messagebox.showerror("Legacy HGT", str(exc))
                 return
 
             default_dir = self.legacy_out_dir.get().strip() or os.path.dirname(hgt_path)
@@ -381,15 +489,58 @@ def _install_world_builder_legacy_hgt_ui_patch() -> None:
                 self.log(f"Legacy HGT conversion failed: {exc}", "error")
                 core.messagebox.showerror("Legacy HGT", str(exc))
 
+        core.ttk.Button(row, text="Browse HGT", command=browse_hgt).pack(side="left", padx=(0, 5))
         self.btn_legacy_hgt_convert = core.ttk.Button(
-            frame,
-            text="CONVERT HGT -> HG2 (NO SMOOTHING)",
+            row,
+            text="Convert Selected HGT Only",
             command=convert_selected_hgt,
-            style="Action.TButton",
         )
-        self.btn_legacy_hgt_convert.pack(fill="x")
+        self.btn_legacy_hgt_convert.pack(side="left")
+
+    def scan_legacy_folder_with_hgt(self, path):
+        original_scan(self, path)
+        if not hasattr(self, "legacy_hgt_info"):
+            return
+        try:
+            hgts = sorted(name for name in os.listdir(path) if name.lower().endswith(".hgt"))
+            trns = sorted(name for name in os.listdir(path) if name.lower().endswith(".trn"))
+            if hgts:
+                self.legacy_hgt_info.set(
+                    f"Detected {len(hgts)} HGT terrain file(s) and {len(trns)} TRN file(s). "
+                    "HGT -> HG2 will run automatically with the atlas port."
+                )
+                if len(hgts) == 1:
+                    self.legacy_hgt_path.set(os.path.join(path, hgts[0]))
+            else:
+                self.legacy_hgt_info.set("No .HGT found in this source folder; atlas-only port.")
+        except Exception as exc:
+            self.legacy_hgt_info.set(f"HGT scan failed: {exc}")
+
+    def generate_legacy_worker_with_hgt(self, src, out):
+        # Terrain conversion is independent from texture-atlas conversion. Do it
+        # first so even a texture-side failure cannot force users back through
+        # the game engine merely to obtain the Redux HG2.
+        if getattr(self, "legacy_auto_hgt", None) is not None and self.legacy_auto_hgt.get():
+            try:
+                results = convert_legacy_hgt_folder_no_smoothing(src, out)
+                if not results:
+                    self.log("Legacy terrain: no HGT files found; atlas conversion only.", "info")
+                for result in results:
+                    self.log(
+                        f"Legacy terrain: {os.path.basename(result.hgt_path)} -> "
+                        f"{os.path.basename(result.hg2_path)} (-nohgtsmoothing equivalent), "
+                        f"{result.zones_x}x{result.zones_z} zones, "
+                        f"range {result.min_height}..{result.max_height}.",
+                        "success",
+                    )
+            except Exception as exc:
+                self.log(f"Legacy HGT port error: {exc}", "error")
+
+        original_worker(self, src, out)
 
     base.setup_legacy_tab = setup_legacy_tab_with_hgt
+    base.scan_legacy_folder = scan_legacy_folder_with_hgt
+    base._generate_legacy_worker = generate_legacy_worker_with_hgt
     base._legacy_hgt_converter_installed = True
 
 
