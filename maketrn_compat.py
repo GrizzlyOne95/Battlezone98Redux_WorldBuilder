@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import os
+import sys
 import time
 from dataclasses import dataclass
 
@@ -81,10 +82,11 @@ def stock_trn_height(empty_elevation: int) -> float:
 
 
 def unpack_hgt_zones(payload: bytes, zones_x: int, zones_z: int) -> np.ndarray:
-    """Decode MakeTRN's legacy HGT payload into a north-unmodified raster.
+    """Decode a legacy HGT payload into a north-unmodified raster.
 
     HGT has no header. It stores 128x128 unsigned-16 blocks in zone-major
-    order. MakeTRN masks every source sample with 0x0fff before interpolation.
+    order. Redux/MakeTRN use the low 12 bits of every source sample when
+    upgrading the terrain to the 256-sample-per-zone HG2 grid.
     """
     zones_x = int(zones_x)
     zones_z = int(zones_z)
@@ -113,8 +115,44 @@ def unpack_hgt_zones(payload: bytes, zones_x: int, zones_z: int) -> np.ndarray:
     return out
 
 
+def interpolate_hgt_to_hg2(legacy: np.ndarray) -> np.ndarray:
+    """Upgrade the 128-sample HGT grid to Redux's 256-sample HG2 grid.
+
+    This is the recovered Battlezone triangle interpolation step only. Each
+    source quad is split along the A->C diagonal and sampled at half-sample
+    positions. Right/bottom neighbors clamp at the far edge. No smoothing,
+    filtering, resampling kernel, or height renormalization is applied.
+
+    This is the terrain shape produced by Redux's legacy HGT upgrade path when
+    the `nohgtsmoothing` launch option disables the subsequent smoothing pass.
+    """
+    src = np.asarray(legacy, dtype=np.uint16) & 0x0FFF
+    if src.ndim != 2 or src.shape[0] == 0 or src.shape[1] == 0:
+        raise ValueError("HGT raster must be a non-empty 2D array")
+
+    src32 = src.astype(np.uint32)
+    right = np.empty_like(src32)
+    right[:, :-1] = src32[:, 1:]
+    right[:, -1] = src32[:, -1]
+    down = np.empty_like(src32)
+    down[:-1, :] = src32[1:, :]
+    down[-1, :] = src32[-1, :]
+    diagonal = np.empty_like(src32)
+    diagonal[:-1, :-1] = src32[1:, 1:]
+    diagonal[-1, :-1] = src32[-1, 1:]
+    diagonal[:-1, -1] = src32[1:, -1]
+    diagonal[-1, -1] = src32[-1, -1]
+
+    interpolated = np.empty((src.shape[0] * 2, src.shape[1] * 2), dtype=np.uint16)
+    interpolated[0::2, 0::2] = src
+    interpolated[0::2, 1::2] = ((src32 + right) // 2).astype(np.uint16)
+    interpolated[1::2, 0::2] = ((src32 + down) // 2).astype(np.uint16)
+    interpolated[1::2, 1::2] = ((src32 + diagonal) // 2).astype(np.uint16)
+    return interpolated
+
+
 def smooth_make_trn_hg2(raster: np.ndarray) -> np.ndarray:
-    """Reproduce MakeTRN's post-interpolation 3x3 smoothing pass.
+    """Reproduce the legacy post-interpolation 3x3 smoothing pass.
 
     Function 0x40180b copies the interpolated Redux raster, then replaces every
     sample with the rounded mean of the in-bounds 3x3 neighborhood. Border
@@ -149,44 +187,210 @@ def smooth_make_trn_hg2(raster: np.ndarray) -> np.ndarray:
 
 
 def upsample_hgt_to_hg2(legacy: np.ndarray) -> np.ndarray:
-    """Reproduce MakeTRN's complete 128->256 samples/zone HGT conversion.
+    """Reproduce MakeTRN/Redux's normal HGT upgrade including smoothing."""
+    return smooth_make_trn_hg2(interpolate_hgt_to_hg2(legacy))
 
-    The disassembled interpolator (0x401a13) splits every source quad along the
-    A->C diagonal and evaluates the Redux grid at half-sample coordinates. At
-    those exact 0.5 positions the piecewise-triangle formula reduces to the
-    four assignments below. At the far right/bottom edges the next source
-    sample is clamped to the current one.
 
-    MakeTRN then immediately calls 0x40180b, a 3x3 smoothing pass over the
-    interpolated raster. Returning the pre-filtered 2x image is therefore not
-    legacy-equivalent.
+def read_hgt_as_hg2(
+    path: os.PathLike | str,
+    zones_x: int,
+    zones_z: int,
+    *,
+    smooth: bool = True,
+) -> np.ndarray:
+    """Read legacy HGT and return a Redux-resolution height raster.
+
+    `smooth=True` preserves the existing MakeTRN-compatible behavior.
+    `smooth=False` matches the Redux legacy-upgrade path with `nohgtsmoothing`.
     """
-    src = np.asarray(legacy, dtype=np.uint16) & 0x0FFF
-    if src.ndim != 2 or src.shape[0] == 0 or src.shape[1] == 0:
-        raise ValueError("HGT raster must be a non-empty 2D array")
-
-    src32 = src.astype(np.uint32)
-    right = np.empty_like(src32)
-    right[:, :-1] = src32[:, 1:]
-    right[:, -1] = src32[:, -1]
-    down = np.empty_like(src32)
-    down[:-1, :] = src32[1:, :]
-    down[-1, :] = src32[-1, :]
-    diagonal = np.empty_like(src32)
-    diagonal[:-1, :-1] = src32[1:, 1:]
-    diagonal[-1, :-1] = src32[-1, 1:]
-    diagonal[:-1, -1] = src32[1:, -1]
-    diagonal[-1, -1] = src32[-1, -1]
-
-    interpolated = np.empty((src.shape[0] * 2, src.shape[1] * 2), dtype=np.uint16)
-    interpolated[0::2, 0::2] = src
-    interpolated[0::2, 1::2] = ((src32 + right) // 2).astype(np.uint16)
-    interpolated[1::2, 0::2] = ((src32 + down) // 2).astype(np.uint16)
-    interpolated[1::2, 1::2] = ((src32 + diagonal) // 2).astype(np.uint16)
-    return smooth_make_trn_hg2(interpolated)
-
-
-def read_hgt_as_hg2(path: os.PathLike | str, zones_x: int, zones_z: int) -> np.ndarray:
     with open(path, "rb") as stream:
         legacy = unpack_hgt_zones(stream.read(), zones_x, zones_z)
-    return upsample_hgt_to_hg2(legacy)
+    interpolated = interpolate_hgt_to_hg2(legacy)
+    return smooth_make_trn_hg2(interpolated) if smooth else interpolated
+
+
+def read_hgt_as_hg2_no_smoothing(
+    path: os.PathLike | str,
+    zones_x: int,
+    zones_z: int,
+) -> np.ndarray:
+    """Explicit helper for Redux-equivalent `nohgtsmoothing` terrain upgrades."""
+    return read_hgt_as_hg2(path, zones_x, zones_z, smooth=False)
+
+
+def convert_hgt_to_hg2_no_smoothing(
+    hgt_path: os.PathLike | str,
+    hg2_path: os.PathLike | str,
+    zones_x: int,
+    zones_z: int,
+) -> np.ndarray:
+    """Convert an authored 1.5 HGT to Redux HG2 without the smoothing pass."""
+    from hg2_codec import DEFAULT_ZONE_BITS, write_hg2
+
+    heights = read_hgt_as_hg2_no_smoothing(hgt_path, zones_x, zones_z)
+    write_hg2(
+        hg2_path,
+        heights,
+        zones_x=int(zones_x),
+        zones_z=int(zones_z),
+        zone_bits=DEFAULT_ZONE_BITS,
+    )
+    return heights
+
+
+def _install_world_builder_legacy_hgt_ui_patch() -> None:
+    """Attach the converter to the existing Legacy Atlas page when available.
+
+    `world_builder.py` imports this module after `world_builder_core`, before the
+    application instance is constructed. Wrapping the base setup method keeps
+    the feature isolated here while preserving the existing Legacy Atlas UI.
+    Unit-test imports do not load `world_builder_core`, so they remain headless.
+    """
+    core = sys.modules.get("world_builder_core")
+    if core is None:
+        return
+    base = getattr(core, "BZ98TRNArchitect", None)
+    if base is None or getattr(base, "_legacy_hgt_converter_installed", False):
+        return
+
+    original_setup = base.setup_legacy_tab
+
+    def setup_legacy_tab_with_hgt(self):
+        original_setup(self)
+
+        self.legacy_hgt_path = core.tk.StringVar()
+        self.legacy_hgt_info = core.tk.StringVar(
+            value="Select an authored BZ 1.5 .HGT. Companion .TRN dimensions are used automatically."
+        )
+
+        frame = core.ttk.LabelFrame(
+            self.tab_legacy,
+            text=" Legacy Terrain Upgrade (.HGT -> .HG2, no smoothing) ",
+            padding=10,
+        )
+        frame.pack(fill="x", padx=20, pady=(0, 10))
+
+        row = core.ttk.Frame(frame)
+        row.pack(fill="x")
+        entry = core.ttk.Entry(row, textvariable=self.legacy_hgt_path)
+        entry.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        def browse_hgt():
+            path = core.filedialog.askopenfilename(
+                title="Select original Battlezone HGT",
+                filetypes=[("Battlezone Height Terrain", "*.hgt"), ("All Files", "*.*")],
+            )
+            if not path:
+                return
+            self.legacy_hgt_path.set(path)
+            trn_path = os.path.splitext(path)[0] + ".trn"
+            trn = core.TRNParser.parse(trn_path)
+            if trn.get("Width") and trn.get("Depth"):
+                try:
+                    zones_x = int(round(float(trn["Width"]) / METERS_PER_ZONE))
+                    zones_z = int(round(float(trn["Depth"]) / METERS_PER_ZONE))
+                    expected = zones_x * zones_z * HGT_SAMPLES_PER_ZONE * HGT_SAMPLES_PER_ZONE * 2
+                    actual = os.path.getsize(path)
+                    suffix = "" if actual == expected else f" | WARNING size {actual}, expected {expected}"
+                    self.legacy_hgt_info.set(
+                        f"{os.path.basename(trn_path)}: {zones_x}x{zones_z} zones -> "
+                        f"{zones_x * HG2_SAMPLES_PER_ZONE}x{zones_z * HG2_SAMPLES_PER_ZONE} HG2{suffix}"
+                    )
+                except Exception as exc:
+                    self.legacy_hgt_info.set(f"Could not validate companion TRN: {exc}")
+            else:
+                self.legacy_hgt_info.set("Companion .TRN with [Size] Width/Depth is required.")
+
+        core.ttk.Button(row, text="Browse HGT", command=browse_hgt).pack(side="left")
+        core.ttk.Label(
+            frame,
+            textvariable=self.legacy_hgt_info,
+            foreground=core.BZ_CYAN,
+            font=("Consolas", 9),
+        ).pack(anchor="w", pady=(5, 5))
+        core.ttk.Label(
+            frame,
+            text=(
+                "Matches Redux legacy terrain upgrading with -nohgtsmoothing: "
+                "12-bit HGT samples -> recovered 2x triangle interpolation -> HG2. "
+                "No 3x3 smoothing, Gaussian filtering, or height renormalization."
+            ),
+            foreground="#888888",
+            wraplength=1050,
+        ).pack(anchor="w", pady=(0, 7))
+
+        def convert_selected_hgt():
+            hgt_path = self.legacy_hgt_path.get().strip()
+            if not hgt_path or not os.path.isfile(hgt_path):
+                core.messagebox.showerror("Legacy HGT", "Select a valid .HGT file first.")
+                return
+            trn_path = os.path.splitext(hgt_path)[0] + ".trn"
+            trn = core.TRNParser.parse(trn_path)
+            width = trn.get("Width")
+            depth = trn.get("Depth")
+            if not width or not depth:
+                core.messagebox.showerror(
+                    "Legacy HGT",
+                    "A companion .TRN with [Size] Width and Depth is required to determine HGT zone dimensions.",
+                )
+                return
+            zones_x_f = float(width) / METERS_PER_ZONE
+            zones_z_f = float(depth) / METERS_PER_ZONE
+            zones_x = int(round(zones_x_f))
+            zones_z = int(round(zones_z_f))
+            if (
+                zones_x <= 0
+                or zones_z <= 0
+                or abs(zones_x_f - zones_x) > 1e-6
+                or abs(zones_z_f - zones_z) > 1e-6
+            ):
+                core.messagebox.showerror(
+                    "Legacy HGT",
+                    "Companion TRN Width/Depth must be exact 1280 m terrain-zone multiples.",
+                )
+                return
+
+            default_dir = self.legacy_out_dir.get().strip() or os.path.dirname(hgt_path)
+            output = core.filedialog.asksaveasfilename(
+                title="Save Redux HG2",
+                initialdir=default_dir,
+                initialfile=os.path.splitext(os.path.basename(hgt_path))[0] + ".hg2",
+                defaultextension=".hg2",
+                filetypes=[("Battlezone Redux Heightmap", "*.hg2")],
+            )
+            if not output:
+                return
+            try:
+                heights = convert_hgt_to_hg2_no_smoothing(
+                    hgt_path, output, zones_x, zones_z
+                )
+                self.log(
+                    f"Legacy HGT -> HG2 (-nohgtsmoothing): {os.path.basename(hgt_path)} -> "
+                    f"{os.path.basename(output)} | {zones_x}x{zones_z} zones | "
+                    f"range {int(heights.min())}..{int(heights.max())}",
+                    "success",
+                )
+                core.messagebox.showinfo(
+                    "Legacy HGT Converted",
+                    f"Saved {output}\n\n"
+                    f"{zones_x}x{zones_z} zones, "
+                    f"{heights.shape[1]}x{heights.shape[0]} HG2 samples.\n"
+                    "Triangle interpolation only; smoothing was not applied.",
+                )
+            except Exception as exc:
+                self.log(f"Legacy HGT conversion failed: {exc}", "error")
+                core.messagebox.showerror("Legacy HGT", str(exc))
+
+        self.btn_legacy_hgt_convert = core.ttk.Button(
+            frame,
+            text="CONVERT HGT -> HG2 (NO SMOOTHING)",
+            command=convert_selected_hgt,
+            style="Action.TButton",
+        )
+        self.btn_legacy_hgt_convert.pack(fill="x")
+
+    base.setup_legacy_tab = setup_legacy_tab_with_hgt
+    base._legacy_hgt_converter_installed = True
+
+
+_install_world_builder_legacy_hgt_ui_patch()
