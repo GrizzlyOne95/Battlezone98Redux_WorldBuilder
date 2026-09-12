@@ -1,8 +1,11 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
 import maketrn_compat
+from hg2_codec import read_hg2
 
 
 class MakeTRNCompatTests(unittest.TestCase):
@@ -31,6 +34,20 @@ class MakeTRNCompatTests(unittest.TestCase):
 
     def test_stock_trn_height_matches_blank_create(self):
         self.assertAlmostEqual(maketrn_compat.stock_trn_height(1234), 123.4)
+
+    def test_hgt_triangle_interpolation_without_smoothing(self):
+        source = np.array([[0, 10], [20, 40]], dtype=np.uint16)
+        up = maketrn_compat.interpolate_hgt_to_hg2(source)
+        expected = np.array(
+            [
+                [0, 5, 10, 10],
+                [10, 20, 25, 25],
+                [20, 30, 40, 40],
+                [20, 30, 40, 40],
+            ],
+            dtype=np.uint16,
+        )
+        np.testing.assert_array_equal(up, expected)
 
     def test_hgt_triangle_upsample_includes_make_trn_smoothing(self):
         source = np.array([[0, 10], [20, 40]], dtype=np.uint16)
@@ -69,8 +86,10 @@ class MakeTRNCompatTests(unittest.TestCase):
     def test_hgt_constant_surface_stays_constant_after_conversion(self):
         source = np.full((4, 4), 1234, dtype=np.uint16)
         up = maketrn_compat.upsample_hgt_to_hg2(source)
+        raw = maketrn_compat.interpolate_hgt_to_hg2(source)
         self.assertEqual(up.shape, (8, 8))
         self.assertTrue(np.all(up == 1234))
+        self.assertTrue(np.all(raw == 1234))
 
     def test_hgt_zone_unpack_masks_12_bits_and_preserves_zone_order(self):
         zone_samples = maketrn_compat.HGT_SAMPLES_PER_ZONE ** 2
@@ -80,6 +99,40 @@ class MakeTRNCompatTests(unittest.TestCase):
         self.assertEqual(raster.shape, (128, 256))
         self.assertTrue(np.all(raster[:, :128] == 0x0123))
         self.assertTrue(np.all(raster[:, 128:] == 0x0456))
+
+    def test_no_smoothing_file_conversion_writes_redux_hg2(self):
+        zone_size = maketrn_compat.HGT_SAMPLES_PER_ZONE
+        legacy = np.arange(zone_size * zone_size, dtype=np.uint16).reshape(zone_size, zone_size)
+        legacy &= 0x0FFF
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hgt_path = Path(tmp) / "legacy.hgt"
+            hg2_path = Path(tmp) / "legacy.hg2"
+            hgt_path.write_bytes(legacy.astype('<u2').tobytes())
+
+            expected = maketrn_compat.interpolate_hgt_to_hg2(legacy)
+            written = maketrn_compat.convert_hgt_to_hg2_no_smoothing(
+                hgt_path, hg2_path, 1, 1
+            )
+            header, actual = read_hg2(hg2_path)
+
+        self.assertEqual((header.zones_x, header.zones_z, header.zone_bits), (1, 1, 8))
+        np.testing.assert_array_equal(written, expected)
+        np.testing.assert_array_equal(actual, expected)
+
+    def test_read_hgt_smooth_switch_changes_nonflat_terrain(self):
+        zone_size = maketrn_compat.HGT_SAMPLES_PER_ZONE
+        legacy = np.zeros((zone_size, zone_size), dtype=np.uint16)
+        legacy[32:96, 32:96] = 3000
+
+        with tempfile.TemporaryDirectory() as tmp:
+            hgt_path = Path(tmp) / "legacy.hgt"
+            hgt_path.write_bytes(legacy.astype('<u2').tobytes())
+            raw = maketrn_compat.read_hgt_as_hg2(hgt_path, 1, 1, smooth=False)
+            smoothed = maketrn_compat.read_hgt_as_hg2(hgt_path, 1, 1, smooth=True)
+
+        np.testing.assert_array_equal(raw, maketrn_compat.interpolate_hgt_to_hg2(legacy))
+        self.assertFalse(np.array_equal(raw, smoothed))
 
 
 if __name__ == '__main__':
