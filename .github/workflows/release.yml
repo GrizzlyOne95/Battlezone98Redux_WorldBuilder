@@ -56,7 +56,7 @@ jobs:
 
       - name: Verify imports and syntax
         run: |
-          python -m py_compile world_builder.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py
+          python -m py_compile world_builder.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py scripts/generate_app_icon.py
           python -c "import world_builder; import legacy_port_cli; import legacy_preflight; import legacy_batch; import legacy_batch_gui; print('Import successful')"
 
       - name: Build Linux executable
@@ -70,6 +70,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          python scripts/generate_app_icon.py branding/repo_icon.svg wb.ico
           pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." world_builder.py
           $asset = Get-Item .\dist\world-builder-windows.exe
           if ($asset.Length -lt 1000000) { throw "Windows release asset is unexpectedly small: $($asset.Length) bytes" }
