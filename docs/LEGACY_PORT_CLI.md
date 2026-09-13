@@ -16,6 +16,8 @@ The command runs the same Legacy Atlas, HGT conversion, and package finalizer us
 
 The output includes the converted HG2, complete TRN, Redux INI, MAT/LGT companions, atlas/CSV/material assets, converted custom sky assets, resolved ACT palette, support files, optional preview PNG, `legacy_port_report.txt`, and `legacy_port_report.json`.
 
+Legacy `.MAP` files are conversion inputs only and are not copied into the Redux launch folder. Terrain MAPs are packed into the generated atlas. Custom sky/cloud/star MAPs are converted to PNG/DDS plus Ogre material files. TRN `.MAP` tokens are retained because Redux resolves them as material names; the original indexed `.MAP` bytes are not required at runtime.
+
 ## Validate an existing output
 
 ```powershell
