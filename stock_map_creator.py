@@ -11,11 +11,14 @@ from hg2_codec import DEFAULT_ZONE_BITS, write_hg2
 from maketrn_compat import StockGeometry, stock_trn_height, validate_empty_elevation
 from mat_codec import PaintStats, generate_mat, parse_trn_painter, write_mat
 from legacy_port import install_world_builder_legacy_package_patch
+from legacy_palette import install_world_builder_legacy_palette_patch
 
 # WorldBuilder imports this module after world_builder_core and maketrn_compat,
 # so this is a stable integration point for the optional Legacy Atlas package
-# finalizer without coupling the mission-packaging logic to the terrain codecs.
+# finalizer and stock-palette resolver without coupling mission/package policy
+# to the terrain codecs.
 install_world_builder_legacy_package_patch()
+install_world_builder_legacy_palette_patch()
 
 
 @dataclass(frozen=True)
