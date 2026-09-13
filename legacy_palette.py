@@ -195,8 +195,11 @@ def install_world_builder_legacy_palette_patch() -> None:
     if moon is not None:
         core.BUILTIN_MOON_PALETTE = moon
 
-    def find_file_ci_with_stock(self, directory, name):
-        found = original_find(self, directory, name)
+    # world_builder_core defines _find_file_ci as a staticmethod. Preserve that
+    # call shape so both instance calls and any direct class-level calls remain
+    # compatible after adding the embedded stock fallback.
+    def find_file_ci_with_stock(directory, name):
+        found = original_find(directory, name)
         if found:
             return found
         if str(name).lower().endswith(".act") and has_stock_palette(name):
@@ -244,7 +247,7 @@ def install_world_builder_legacy_palette_patch() -> None:
         self.log(f"Palette: {resolution.message}.", level)
         original_worker(self, src, out)
 
-    base._find_file_ci = find_file_ci_with_stock
+    base._find_file_ci = staticmethod(find_file_ci_with_stock)
     base.scan_legacy_folder = scan_legacy_folder_with_palette
     base._generate_legacy_worker = generate_legacy_worker_with_palette
     base._legacy_stock_palettes_installed = True
