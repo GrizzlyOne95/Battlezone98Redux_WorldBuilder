@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sys
 
@@ -37,6 +38,68 @@ def _copy_runtime_support_files(source_dir: os.PathLike | str, output_dir: os.Pa
     return copied
 
 
+def _runtime_map_refs_from_trn(path: str) -> list[str]:
+    """Return non-terrain MAP lookup names exactly as authored in the TRN."""
+    refs: list[str] = []
+    section = ""
+    with open(path, "r", encoding="cp1252", errors="ignore") as stream:
+        for raw in stream:
+            line = raw.split("//", 1)[0].split(";", 1)[0].strip()
+            if not line:
+                continue
+            match = re.match(r"^\[([^\]]+)\]", line)
+            if match:
+                section = match.group(1).strip().lower()
+                continue
+            if re.fullmatch(r"texturetype\d+", section) or "=" not in line:
+                continue
+            _key, value = line.split("=", 1)
+            value = value.strip().strip('"').strip("'")
+            if value.lower().endswith(".map") and value not in refs:
+                refs.append(os.path.basename(value))
+    return refs
+
+
+def _repair_generated_material_names(source_dir: str, output_dir: str) -> int:
+    """Make custom Ogre material names match the TRN lookup spelling exactly.
+
+    Legacy packages are often authored on case-insensitive Windows filesystems,
+    so a TRN can say `blusky.map` while the physical file is `BLUSKY.MAP`.
+    Redux looks these resources up by material name; keeping the TRN spelling is
+    deterministic across Windows/Linux and is what the preflight validates.
+    """
+    repaired = 0
+    trns = sorted(
+        os.path.join(source_dir, name)
+        for name in os.listdir(source_dir)
+        if name.lower().endswith(".trn") and os.path.isfile(os.path.join(source_dir, name))
+    )
+    for trn in trns:
+        for reference in _runtime_map_refs_from_trn(trn):
+            stem = os.path.splitext(reference)[0].lower()
+            candidates = [
+                os.path.join(output_dir, stem + ".material"),
+                os.path.join(output_dir, stem + "_sky.material"),
+            ]
+            material_path = next((path for path in candidates if os.path.isfile(path)), None)
+            if not material_path:
+                continue
+            with open(material_path, "r", encoding="utf-8", errors="ignore") as stream:
+                text = stream.read()
+            rendered, count = re.subn(
+                r"(^\s*material\s+)([^\s:{]+)",
+                lambda match: match.group(1) + reference,
+                text,
+                count=1,
+                flags=re.IGNORECASE | re.MULTILINE,
+            )
+            if count and rendered != text:
+                with open(material_path, "w", encoding="utf-8", newline="\n") as stream:
+                    stream.write(rendered)
+                repaired += 1
+    return repaired
+
+
 def install_world_builder_legacy_preflight_patch() -> None:
     """Make READY TO LAUNCH depend on a real package preflight."""
     core = sys.modules.get("world_builder_core")
@@ -57,6 +120,16 @@ def install_world_builder_legacy_preflight_patch() -> None:
         original_worker(self, src, out)
         if getattr(self, "legacy_auto_package", None) is None or not self.legacy_auto_package.get():
             return
+
+        try:
+            repaired = _repair_generated_material_names(src, out)
+            if repaired:
+                self.log(
+                    f"Legacy materials: normalized {repaired} generated material name(s) to exact TRN spelling.",
+                    "success",
+                )
+        except Exception as exc:
+            self.log(f"Legacy material-name normalization failed: {exc}", "warning")
 
         explicit = self.legacy_pal_path.get().strip() if hasattr(self, "legacy_pal_path") else ""
         try:
