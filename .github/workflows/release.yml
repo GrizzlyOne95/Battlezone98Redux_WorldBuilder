@@ -56,8 +56,8 @@ jobs:
 
       - name: Verify imports and syntax
         run: |
-          python -m py_compile world_builder.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py
-          python -c "import world_builder; import legacy_port_cli; import legacy_preflight; print('Import successful')"
+          python -m py_compile world_builder.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py
+          python -c "import world_builder; import legacy_port_cli; import legacy_preflight; import legacy_batch; import legacy_batch_gui; print('Import successful')"
 
       - name: Build Linux executable
         if: runner.os == 'Linux'
