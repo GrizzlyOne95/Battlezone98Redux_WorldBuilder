@@ -56,8 +56,8 @@ jobs:
 
       - name: Verify imports and syntax
         run: |
-          python -m py_compile world_builder.py
-          python -c "import world_builder; print('Import successful')"
+          python -m py_compile world_builder.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py
+          python -c "import world_builder; import legacy_port_cli; import legacy_preflight; print('Import successful')"
 
       - name: Build Linux executable
         if: runner.os == 'Linux'
@@ -76,6 +76,16 @@ jobs:
           $archive = pyi-archive_viewer .\dist\world-builder-windows.exe -l | Out-String
           if ($archive -notmatch 'imageio.*\.dist-info') { throw "Frozen Windows executable is missing imageio distribution metadata" }
 
+      - name: Build Windows CLI executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --console --copy-metadata imageio --icon=wb.ico --name world-builder-cli --add-data="BZONE.ttf;." legacy_port_cli.py
+          $asset = Get-Item .\dist\world-builder-cli.exe
+          if ($asset.Length -lt 1000000) { throw "Windows CLI release asset is unexpectedly small: $($asset.Length) bytes" }
+          $archive = pyi-archive_viewer .\dist\world-builder-cli.exe -l | Out-String
+          if ($archive -notmatch 'imageio.*\.dist-info') { throw "Frozen Windows CLI executable is missing imageio distribution metadata" }
+
       - name: Build and package macOS app
         if: runner.os == 'macOS'
         run: |
@@ -90,6 +100,15 @@ jobs:
         with:
           name: world-builder-${{ matrix.platform }}
           path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Windows CLI asset
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: world-builder-cli
+          path: dist/world-builder-cli.exe
           if-no-files-found: error
           retention-days: 7
 
@@ -113,6 +132,7 @@ jobs:
           ls -lh release-assets
           test "$(stat -c%s release-assets/world-builder-linux)" -gt 1000000
           test "$(stat -c%s release-assets/world-builder-windows.exe)" -gt 1000000
+          test "$(stat -c%s release-assets/world-builder-cli.exe)" -gt 1000000
           test "$(stat -c%s release-assets/world-builder-macos.zip)" -gt 1000000
 
       - name: Publish GitHub Release
