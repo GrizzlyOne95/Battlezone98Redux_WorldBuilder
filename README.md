@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="branding/repo_icon.svg" width="180" alt="Battlezone98Redux World Builder icon">
+</p>
+
 # Battlezone98Redux_WorldBuilder
 A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2/HGT conversion, and more
 
