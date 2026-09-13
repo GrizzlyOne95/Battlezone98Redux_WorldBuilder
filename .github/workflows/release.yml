@@ -2,19 +2,19 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - 'release/v1.0.12'
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to release (e.g. v1.0.4)'
+        description: 'Version to release (e.g. v1.0.12)'
         required: true
 
 permissions:
   contents: write
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+  RELEASE_TAG: v1.0.12
 
 jobs:
   build:
@@ -138,10 +138,10 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          target_commitish: ${{ github.sha }}
-          name: Release ${{ env.RELEASE_TAG }}
-          body_path: docs/RELEASE_NOTES_${{ env.RELEASE_TAG }}.md
+          tag_name: v1.0.12
+          target_commitish: 0a4856161ad004731c190bf20e7bd9df4c6cd7bc
+          name: Release v1.0.12
+          body_path: docs/RELEASE_NOTES_v1.0.12.md
           files: release-assets/*
           draft: false
           prerelease: false
