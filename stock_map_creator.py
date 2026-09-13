@@ -13,14 +13,16 @@ from mat_codec import PaintStats, generate_mat, parse_trn_painter, write_mat
 from legacy_port import install_world_builder_legacy_package_patch
 from legacy_palette import install_world_builder_legacy_palette_patch
 from legacy_preflight_hook import install_world_builder_legacy_preflight_patch
+from legacy_batch_gui import install_world_builder_legacy_batch_patch
 
 # WorldBuilder imports this module after world_builder_core and maketrn_compat,
 # so this is a stable integration point for the optional Legacy Atlas package
-# finalizer, stock-palette resolver, and final launchability preflight without
-# coupling mission/package policy to the terrain codecs.
+# finalizer, stock-palette resolver, launchability preflight, and batch GUI
+# without coupling mission/package policy to the terrain codecs.
 install_world_builder_legacy_package_patch()
 install_world_builder_legacy_palette_patch()
 install_world_builder_legacy_preflight_patch()
+install_world_builder_legacy_batch_patch()
 
 
 @dataclass(frozen=True)
