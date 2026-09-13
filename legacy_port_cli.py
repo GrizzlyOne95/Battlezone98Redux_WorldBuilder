@@ -4,19 +4,8 @@ import argparse
 import os
 import sys
 
+from legacy_batch import default_batch_prefix, render_batch_report, run_legacy_batch
 from legacy_preflight import render_validation_report, validate_legacy_port_folder
-
-
-def _default_prefix(source_dir: str) -> str:
-    bzns = sorted(
-        name for name in os.listdir(source_dir)
-        if name.lower().endswith(".bzn") and os.path.isfile(os.path.join(source_dir, name))
-    )
-    if len(bzns) == 1:
-        return os.path.splitext(bzns[0])[0]
-    base = os.path.basename(os.path.normpath(source_dir)) or "legacy"
-    value = "".join(ch for ch in base if ch.isalnum() or ch in "_-")
-    return value or "legacy"
 
 
 def _console_log(message: str, level: str = "info") -> None:
@@ -32,6 +21,44 @@ def _require_source_folder(source: str) -> str:
     return source
 
 
+def _require_directory(path: str, description: str) -> str:
+    path = os.path.abspath(path)
+    if not os.path.isdir(path):
+        raise ValueError(f"{description} must be an existing directory")
+    return path
+
+
+def _new_hidden_app():
+    import world_builder
+
+    core = world_builder.core
+    root = core.tk.Tk()
+    root.withdraw()
+    app = world_builder.BZ98TRNArchitect(root)
+    app.log = _console_log
+    return root, app
+
+
+def _configure_port_app(
+    app,
+    source_dir: str,
+    output_dir: str,
+    *,
+    prefix: str,
+    palette: str | None,
+    image_format: str,
+) -> None:
+    app.legacy_source_dir.set(source_dir)
+    app.legacy_out_dir.set(output_dir)
+    app.legacy_prefix.set(prefix)
+    app.legacy_format.set(image_format)
+    app.legacy_pal_path.set(palette or "")
+    if hasattr(app, "legacy_auto_hgt"):
+        app.legacy_auto_hgt.set(True)
+    if hasattr(app, "legacy_auto_package"):
+        app.legacy_auto_package.set(True)
+
+
 def _run_shared_pipeline(
     source_dir: str,
     output_dir: str,
@@ -41,24 +68,16 @@ def _run_shared_pipeline(
     image_format: str,
 ) -> None:
     # The CLI intentionally drives the exact same Legacy Atlas worker as the GUI.
-    # Tk is kept hidden and the normal GUI log is replaced with stdout.
-    import world_builder
-
-    core = world_builder.core
-    root = core.tk.Tk()
-    root.withdraw()
+    root, app = _new_hidden_app()
     try:
-        app = world_builder.BZ98TRNArchitect(root)
-        app.log = _console_log
-        app.legacy_source_dir.set(source_dir)
-        app.legacy_out_dir.set(output_dir)
-        app.legacy_prefix.set(prefix)
-        app.legacy_format.set(image_format)
-        app.legacy_pal_path.set(palette or "")
-        if hasattr(app, "legacy_auto_hgt"):
-            app.legacy_auto_hgt.set(True)
-        if hasattr(app, "legacy_auto_package"):
-            app.legacy_auto_package.set(True)
+        _configure_port_app(
+            app,
+            source_dir,
+            output_dir,
+            prefix=prefix,
+            palette=palette,
+            image_format=image_format,
+        )
         app._generate_legacy_worker(source_dir, output_dir)
     finally:
         try:
@@ -71,7 +90,7 @@ def command_legacy_port(args: argparse.Namespace) -> int:
     source = _require_source_folder(args.source)
     output = os.path.abspath(args.output)
     os.makedirs(output, exist_ok=True)
-    prefix = args.prefix or _default_prefix(source)
+    prefix = args.prefix or default_batch_prefix(source)
     palette = os.path.abspath(args.palette) if args.palette else None
 
     _console_log(f"Source: {source}")
@@ -85,8 +104,6 @@ def command_legacy_port(args: argparse.Namespace) -> int:
         image_format=args.format,
     )
 
-    # Re-read the finished package for an explicit process exit status. The GUI
-    # wrapper has already written the same report, so this is intentionally idempotent.
     validation = validate_legacy_port_folder(
         source,
         output,
@@ -99,6 +116,51 @@ def command_legacy_port(args: argparse.Namespace) -> int:
     if validation.report_path:
         print(f"Report: {validation.report_path}")
     return 0 if validation.ready else 2
+
+
+def command_legacy_port_batch(args: argparse.Namespace) -> int:
+    source_root = _require_directory(args.source_root, "Batch source root")
+    output_root = os.path.abspath(args.output_root)
+    palette = os.path.abspath(args.palette) if args.palette else None
+    os.makedirs(output_root, exist_ok=True)
+
+    _console_log(f"Batch source root: {source_root}")
+    _console_log(f"Batch output root: {output_root}")
+    if palette:
+        _console_log(f"Manual palette override for every mission: {palette}", "warning")
+    else:
+        _console_log("Palette mode: automatic per mission", "info")
+
+    root, app = _new_hidden_app()
+    try:
+        def port_one(source_dir: str, output_dir: str, prefix: str) -> None:
+            _configure_port_app(
+                app,
+                source_dir,
+                output_dir,
+                prefix=prefix,
+                palette=palette,
+                image_format=args.format,
+            )
+            app._generate_legacy_worker(source_dir, output_dir)
+
+        result = run_legacy_batch(
+            source_root,
+            output_root,
+            port_one,
+            explicit_palette=palette,
+            log=_console_log,
+        )
+    finally:
+        try:
+            root.destroy()
+        except Exception:
+            pass
+
+    print()
+    print(render_batch_report(result), end="")
+    print(f"Batch report: {result.report_path}")
+    return 0 if result.all_ready else 2
 
 
 def command_validate(args: argparse.Namespace) -> int:
@@ -127,7 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     port = sub.add_parser(
         "legacy-port",
-        help="Convert an extracted Battlezone 1.x map folder into a launchable Redux folder",
+        help="Convert one extracted Battlezone 1.x map folder into a launchable Redux folder",
     )
     port.add_argument("source", help="Extracted legacy map folder")
     port.add_argument("output", help="Redux output folder")
@@ -140,6 +202,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Atlas texture format (default: .dds)",
     )
     port.set_defaults(func=command_legacy_port)
+
+    batch = sub.add_parser(
+        "legacy-port-batch",
+        help="Port every immediate mission subfolder independently and continue past failures",
+    )
+    batch.add_argument("source_root", help="Parent folder whose immediate subfolders contain legacy maps")
+    batch.add_argument("output_root", help="Parent folder that will receive one Redux subfolder per map")
+    batch.add_argument(
+        "--palette",
+        help="Optional ACT override applied to every mission; omit for automatic per-map palette resolution",
+    )
+    batch.add_argument(
+        "--format",
+        choices=(".dds", ".png"),
+        default=".dds",
+        help="Atlas texture format for every map (default: .dds)",
+    )
+    batch.set_defaults(func=command_legacy_port_batch)
 
     validate = sub.add_parser(
         "validate-port",
