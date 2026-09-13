@@ -6,11 +6,11 @@ import shutil
 import sys
 
 import legacy_port
-from legacy_preflight import is_legacy_terrain_map_name, validate_legacy_port_folder
+from legacy_preflight import validate_legacy_port_folder
 
 
 def _copy_runtime_support_files(source_dir: os.PathLike | str, output_dir: os.PathLike | str) -> int:
-    """Copy runtime companions but leave packed terrain MAP mip files behind."""
+    """Copy runtime companions while excluding legacy conversion-source files."""
     source_dir = os.path.abspath(os.fspath(source_dir))
     output_dir = os.path.abspath(os.fspath(output_dir))
     if os.path.normcase(source_dir) == os.path.normcase(output_dir):
@@ -23,12 +23,12 @@ def _copy_runtime_support_files(source_dir: os.PathLike | str, output_dir: os.Pa
         if not os.path.isfile(source):
             continue
         ext = os.path.splitext(name)[1].lower()
-        if ext in {".hgt", ".trn", ".exe", ".com"}:
-            continue
-        # These indexed texture/mip assets have already been packed into the
-        # generated Redux atlas. Sky/custom MAP assets use different names and
-        # remain eligible for copying/conversion.
-        if ext == ".map" and is_legacy_terrain_map_name(name):
+        # HGT/TRN are replaced by generated Redux terrain files. Legacy MAPs
+        # are conversion inputs only: Redux TRN .MAP tokens resolve Ogre
+        # material names, while the generated material points at PNG/DDS data.
+        # The original indexed MAP bytes therefore never belong in the launch
+        # folder, including custom sky/cloud/star MAPs.
+        if ext in {".hgt", ".trn", ".map", ".exe", ".com"}:
             continue
         destination = os.path.join(output_dir, name)
         if os.path.exists(destination):
@@ -110,8 +110,8 @@ def install_world_builder_legacy_preflight_patch() -> None:
         return
 
     # finalize_legacy_port_folder resolves this function from the legacy_port
-    # module at call time, so replacing it here keeps obsolete terrain MAP mip
-    # files out of the final launch folder without changing the atlas source pass.
+    # module at call time, so replacing it here keeps all legacy MAP conversion
+    # sources out of the final launch folder without changing atlas/sky input.
     legacy_port.copy_legacy_support_files = _copy_runtime_support_files
 
     original_worker = base._generate_legacy_worker
