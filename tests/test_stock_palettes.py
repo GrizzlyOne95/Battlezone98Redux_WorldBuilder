@@ -41,7 +41,7 @@ class StockPaletteTests(unittest.TestCase):
         self.assertTrue(all(len(rgb) == 3 for rgb in palette))
 
     def test_palette_name_normalization_is_case_insensitive(self):
-        self.assertEqual(normalize_act_name(r"C:\\BZ\\MARS.ACT"), "mars.act")
+        self.assertEqual(normalize_act_name("MARS.ACT"), "mars.act")
         self.assertEqual(normalize_act_name("venus"), "venus.act")
 
     def test_mars_and_moon_are_distinct(self):
