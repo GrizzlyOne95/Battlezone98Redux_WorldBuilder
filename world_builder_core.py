@@ -3237,6 +3237,26 @@ class BZ98TRNArchitect:
                     img = img.convert("RGBA")
                 else:
                     img = img.convert("RGBA")
+            elif fmt in (BZMapFormat.ARGB4444, BZMapFormat.RGB565):
+                # 16-bit tiles. Pillow has no raw decoder for either packing, so
+                # unpack the channels by hand and widen each to 8 bits. Before
+                # this branch existed both formats fell through to the 32-bit
+                # path, which asks for four bytes per pixel and dies with
+                # "not enough image data" -- and 16-bit is what most non-stock
+                # 1.5 planet sets ship (Callisto in Legends of War, for one), so
+                # the converter could not read them at all.
+                v = np.frombuffer(data, dtype='<u2', count=w * h).reshape(h, w)
+                if fmt == BZMapFormat.RGB565:
+                    r = (((v >> 11) & 0x1F).astype(np.uint16) * 255 + 15) // 31
+                    g = (((v >> 5) & 0x3F).astype(np.uint16) * 255 + 31) // 63
+                    b = ((v & 0x1F).astype(np.uint16) * 255 + 15) // 31
+                    a = np.full(v.shape, 255, dtype=np.uint16)
+                else:
+                    a = ((v >> 12) & 0xF).astype(np.uint16) * 17
+                    r = ((v >> 8) & 0xF).astype(np.uint16) * 17
+                    g = ((v >> 4) & 0xF).astype(np.uint16) * 17
+                    b = (v & 0xF).astype(np.uint16) * 17
+                img = Image.fromarray(np.dstack([r, g, b, a]).astype(np.uint8), 'RGBA')
             else:
                  img = Image.frombytes('RGBA', (w, h), data, 'raw', 'BGRA')
 
