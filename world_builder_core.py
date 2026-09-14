@@ -2397,7 +2397,17 @@ class BZ98TRNArchitect:
                     rb, fmt, h, _ = struct.unpack('<4H', f.read(8))
                     data = f.read()
                 w = rb // BZMapFormat.bpp[fmt]
-                idx = np.frombuffer(data[:w * h], dtype=np.uint8).reshape(h, w)[::-1]
+                if fmt == BZMapFormat.INDEXED:
+                    idx = np.frombuffer(data[:w * h], dtype=np.uint8).reshape(h, w)[::-1]
+                else:
+                    # A 16- or 32-bit plate has no palette index to key on, and
+                    # reading its payload as bytes gives half an image of noise.
+                    # The convention these tiles encode is 'index 0 is the hole',
+                    # and index 0 is black in every BZ palette, so key on black
+                    # and hand _key_background the same 0/1 shape it expects.
+                    flat = np.asarray(img.convert('RGB')).reshape(-1, 3)
+                    idx = np.where(flat.sum(axis=1) == 0, 0, 1).astype(np.uint8)
+                    idx = idx.reshape(np.asarray(img).shape[:2])
                 opaque = self._key_background(idx)
                 bled = self._bleed_rgb(rgb, opaque)
                 alpha = np.where(opaque, 255, 0).astype(np.uint8)
