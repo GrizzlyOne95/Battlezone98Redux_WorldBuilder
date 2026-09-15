@@ -49,6 +49,19 @@ class TerrainOBJTests(unittest.TestCase):
             mesh = read_terrain_obj(shuffled)
             self.assertTrue(np.array_equal(mesh.heights, heights))
 
+    def test_obj_import_accepts_tab_separated_vertices(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            heights = np.arange(16, dtype=np.uint16).reshape((4, 4)) * 5
+            obj_path = os.path.join(temp_dir, "terrain.obj")
+            write_heightfield_obj(obj_path, heights, zones_x=1, zones_z=1, zone_bits=2)
+            with open(obj_path, "r", encoding="utf-8") as stream:
+                text = stream.read()
+            text = text.replace("v ", "v\t")
+            with open(obj_path, "w", encoding="utf-8", newline="\n") as stream:
+                stream.write(text)
+            mesh = read_terrain_obj(obj_path)
+            self.assertTrue(np.array_equal(mesh.heights, heights))
+
     def test_obj_import_rejects_non_regular_xz_grid(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             heights = np.arange(16, dtype=np.uint16).reshape((4, 4))
@@ -61,7 +74,7 @@ class TerrainOBJTests(unittest.TestCase):
             with open(obj_path, "w", encoding="utf-8", newline="\n") as stream:
                 stream.write(text)
 
-            with self.assertRaisesRegex(ValueError, "regular terrain grid|regular X/Z"):
+            with self.assertRaisesRegex(ValueError, "rectangular grid|regular X/Z"):
                 read_terrain_obj(obj_path)
 
     def test_metadata_geometry_resolves_for_hg2_export(self):
