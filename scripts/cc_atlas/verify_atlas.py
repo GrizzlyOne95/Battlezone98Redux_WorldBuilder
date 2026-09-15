@@ -92,6 +92,18 @@ def verify(out_dir):
         msk = _med3((np.abs(tt - ta).mean(2) > np.abs(tt - tb).mean(2)).astype(np.float32))
         edges = dict(N=msk[0].mean(), S=msk[-1].mean(),
                      W=msk[:, 0].mean(), E=msk[:, -1].mean())
+        # The per-pixel vote is only a proxy for "which material does this edge
+        # show", and it degrades when the two solids are merely similar rather
+        # than identical: Tunnel_2 vs Tunnel_5 differ by 11.9 mean abs, clearing
+        # the skip test above, yet enough pixels along the shared edge are nearly
+        # equidistant that 42% of them vote the wrong way -- on a column that is
+        # byte-for-byte solid B. An edge that matches one solid exactly needs no
+        # vote, so take that reading directly when it is available.
+        for e, sl in (("N", np.s_[0, :]), ("S", np.s_[-1, :]),
+                      ("W", np.s_[:, 0]), ("E", np.s_[:, -1])):
+            da, db = np.abs(tt[sl] - ta[sl]).mean(), np.abs(tt[sl] - tb[sl]).mean()
+            if min(da, db) < 0.5 and abs(da - db) > 1.0:
+                edges[e] = 0.0 if da < db else 1.0
         checked += 1
         for e, (lo, hi) in CONTRACT[kind].items():
             if not lo <= edges[e] <= hi:
