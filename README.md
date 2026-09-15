@@ -33,10 +33,10 @@ Ports custom worlds from 1.5 format into Redux. Auto converts the .MAP files int
 
 The Legacy Atlas page also includes an **authored HGT -> Redux HG2** terrain upgrader. Select the original `.hgt`; WorldBuilder reads the companion `.trn` dimensions, preserves the low 12-bit legacy height samples and zone ordering, performs the recovered 128 -> 256 samples-per-zone triangle interpolation, and writes a canonical Redux `.hg2`. It deliberately skips the post-upgrade 3x3 smoothing pass, matching the terrain-upgrade behavior requested by Redux's `-nohgtsmoothing` launch option. No Gaussian filtering or height renormalization is applied.
 
-<img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-87c5-1edeb8a86576" />
+<img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-b81d-e146e3d4d908" />
 
 ## Heightmap Converter
-Ports HGT or HG2 to PNG, or PNG back to HGT/HG2. Experimental World Machine implementation.
+Ports HGT or HG2 to PNG, or PNG back to HGT/HG2. Experimental World Machine implementation. 
 
 The Heightmap Converter also includes a **Terrain OBJ Round-Trip** workflow inspired by the legacy TerraZone utility. It exports a Redux HG2 as a regular Wavefront OBJ grid, previews imported OBJ heightfields, and writes them back to HG2 without requiring Blender or `bpy` inside WorldBuilder. The OBJ includes WorldBuilder metadata for zone dimensions and sample spacing. On import, the X/Z grid is validated and used to reconstruct the heightfield, so vertex order may change; sculpting should modify Y/height while leaving the X/Z grid intact. OBJ files without WorldBuilder metadata can still be converted when their grid dimensions map cleanly to Redux's 256 samples per zone.
 
