@@ -39,6 +39,7 @@ from mat_codec import (
     write_mat,
 )
 from stock_map_creator import StockBuildConfig, build_stock_map
+from terrain_obj import export_hg2_to_obj, read_terrain_obj, resolve_hg2_geometry
 
 
 _BaseArchitect = core.BZ98TRNArchitect
@@ -64,6 +65,12 @@ class BZ98TRNArchitect(_BaseArchitect):
         self.stock_param_path = core.tk.StringVar(value="")
         self.make_trn_deterministic_mat = core.tk.BooleanVar(value=False)
         self._install_stock_make_trn_controls()
+
+        # TerraZone-inspired, Blender-independent OBJ terrain round-trip state.
+        self.terrain_obj_path = core.tk.StringVar(value="")
+        self.terrain_obj_status = core.tk.StringVar(value="No OBJ loaded")
+        self.terrain_obj_mesh = None
+        self._install_terrain_obj_controls()
 
         try:
             self.refresh_rules_list()
@@ -150,6 +157,196 @@ class BZ98TRNArchitect(_BaseArchitect):
     def validate_map_name(self, value):
         """Make the existing Stock UI match its documented alphanumeric rule."""
         return len(value) <= 8 and (value == "" or value.isalnum())
+
+    def _install_terrain_obj_controls(self):
+        """Add OBJ terrain round-trip controls to the Heightmap Converter tab."""
+        try:
+            containers = self.tab_hg2.winfo_children()
+            if not containers:
+                return
+            columns = containers[0].winfo_children()
+            if not columns:
+                return
+            left_panel = columns[0]
+
+            frame = core.ttk.LabelFrame(left_panel, text=" Terrain OBJ Round-Trip ", padding=8)
+            frame.pack(fill="x", pady=(10, 0))
+
+            core.ttk.Label(
+                frame,
+                text="Edit HG2 terrain as a regular Wavefront OBJ mesh.",
+                foreground=core.BZ_CYAN,
+            ).pack(anchor="w")
+            core.ttk.Label(
+                frame,
+                text="WorldBuilder requires no Blender install. In a 3D editor, sculpt Y/height and keep the X/Z grid intact.",
+                font=(self.custom_font_name, 7, "italic"),
+                foreground="#777777",
+                wraplength=390,
+            ).pack(anchor="w", pady=(2, 5))
+
+            buttons = core.ttk.Frame(frame)
+            buttons.pack(fill="x")
+            core.ttk.Button(
+                buttons, text="IMPORT OBJ", command=self.browse_terrain_obj
+            ).pack(side="left", expand=True, fill="x", padx=(0, 3))
+            core.ttk.Button(
+                buttons, text="OBJ -> HG2", command=self.export_obj_to_hg2
+            ).pack(side="left", expand=True, fill="x", padx=3)
+            core.ttk.Button(
+                buttons, text="HG2 -> OBJ", command=self.export_hg2_to_obj
+            ).pack(side="left", expand=True, fill="x", padx=(3, 0))
+
+            core.ttk.Label(
+                frame,
+                textvariable=self.terrain_obj_status,
+                foreground=core.BZ_GREEN,
+                wraplength=390,
+            ).pack(anchor="w", pady=(5, 0))
+        except Exception as exc:
+            self.log(f"Terrain OBJ controls unavailable: {exc}", "warning")
+
+    def _preview_height_array(self, heights):
+        arr = np.asarray(heights, dtype=np.float32)
+        if arr.size == 0:
+            return
+        f_min, f_max = float(arr.min()), float(arr.max())
+        if f_max > f_min:
+            norm = (arr - f_min) / (f_max - f_min)
+        else:
+            norm = np.zeros_like(arr, dtype=np.float32)
+        preview = Image.fromarray((np.clip(norm, 0.0, 1.0) * 255).astype(np.uint8))
+        cw, ch = self.hg2_preview_canvas.winfo_width(), self.hg2_preview_canvas.winfo_height()
+        if cw < 10:
+            cw, ch = 600, 600
+        preview.thumbnail((cw, ch), self.resample_method)
+        self.hg2_tk_photo = ImageTk.PhotoImage(preview)
+        self.hg2_preview_canvas.delete("all")
+        self.hg2_preview_canvas.create_image(cw // 2, ch // 2, image=self.hg2_tk_photo)
+
+    def browse_terrain_obj(self):
+        path = core.filedialog.askopenfilename(
+            title="Import Terrain OBJ",
+            filetypes=[("Wavefront OBJ", "*.obj"), ("All Files", "*.*")],
+        )
+        if not path:
+            return
+        try:
+            mesh = read_terrain_obj(path)
+            self.terrain_obj_mesh = mesh
+            self.terrain_obj_path.set(path)
+            if mesh.zones_x and mesh.zones_z:
+                self.hg2_target_zw.set(mesh.zones_x)
+                self.hg2_target_zl.set(mesh.zones_z)
+            meta = (
+                f"{mesh.zones_x}x{mesh.zones_z} zones"
+                if mesh.zones_x and mesh.zones_z
+                else "geometry inferred from X/Z grid"
+            )
+            self.terrain_obj_status.set(
+                f"{os.path.basename(path)}: {mesh.samples_x}x{mesh.samples_z} vertices, {meta}"
+            )
+            self._preview_height_array(mesh.heights)
+            self.log(
+                f"Loaded terrain OBJ: {os.path.basename(path)} "
+                f"({mesh.samples_x}x{mesh.samples_z} height samples).",
+                "success",
+            )
+        except Exception as exc:
+            self.terrain_obj_mesh = None
+            self.terrain_obj_status.set("OBJ load failed")
+            core.messagebox.showerror("Terrain OBJ", f"Failed to import OBJ:\n{exc}")
+
+    def export_hg2_to_obj(self):
+        source_path = self.hg2_path.get()
+        if not source_path or not os.path.isfile(source_path) or not source_path.lower().endswith(".hg2"):
+            core.messagebox.showerror("Terrain OBJ", "Select an HG2 in Heightmap Converter first.")
+            return
+        save_path = core.filedialog.asksaveasfilename(
+            title="Export HG2 Terrain as OBJ",
+            defaultextension=".obj",
+            initialfile=os.path.splitext(os.path.basename(source_path))[0] + ".obj",
+            filetypes=[("Wavefront OBJ", "*.obj")],
+        )
+        if not save_path:
+            return
+        try:
+            export_hg2_to_obj(source_path, save_path)
+            header = read_hg2_header(source_path)
+            spacing = METERS_PER_ZONE / float(1 << header.zone_bits)
+            self.log(
+                f"Exported terrain OBJ: {os.path.basename(save_path)} "
+                f"({header.zones_x}x{header.zones_z} zones, {spacing:g} m/sample).",
+                "success",
+            )
+            core.messagebox.showinfo(
+                "Terrain OBJ",
+                f"Exported:\n{save_path}\n\n"
+                "The OBJ contains WorldBuilder HG2 metadata and a regular X/Z grid. "
+                "Edit vertex Y values in Blender, 3ds Max, Maya, or another OBJ editor, "
+                "then import it here and export back to HG2.",
+            )
+        except Exception as exc:
+            core.messagebox.showerror("Terrain OBJ", f"Failed to export OBJ:\n{exc}")
+
+    def export_obj_to_hg2(self):
+        mesh = self.terrain_obj_mesh
+        if mesh is None:
+            path = self.terrain_obj_path.get()
+            if not path or not os.path.isfile(path):
+                core.messagebox.showerror("Terrain OBJ", "Import a terrain OBJ first.")
+                return
+            try:
+                mesh = read_terrain_obj(path)
+                self.terrain_obj_mesh = mesh
+            except Exception as exc:
+                core.messagebox.showerror("Terrain OBJ", f"Failed to import OBJ:\n{exc}")
+                return
+
+        try:
+            zones_x, zones_z, zone_bits = resolve_hg2_geometry(
+                mesh,
+                preferred_zones_x=int(self.hg2_target_zw.get()),
+                preferred_zones_z=int(self.hg2_target_zl.get()),
+            )
+        except Exception as exc:
+            core.messagebox.showerror("Terrain OBJ", str(exc))
+            return
+
+        save_path = core.filedialog.asksaveasfilename(
+            title="Export Terrain OBJ as HG2",
+            defaultextension=".hg2",
+            initialfile=os.path.splitext(os.path.basename(mesh.path))[0] + ".hg2",
+            filetypes=[("Redux Heightmap", "*.hg2")],
+        )
+        if not save_path:
+            return
+
+        try:
+            write_hg2(
+                save_path,
+                mesh.heights,
+                zones_x=zones_x,
+                zones_z=zones_z,
+                zone_bits=zone_bits,
+            )
+            self.hg2_target_zw.set(zones_x)
+            self.hg2_target_zl.set(zones_z)
+            self.log(
+                f"Exported HG2 from OBJ: {os.path.basename(save_path)} "
+                f"({zones_x}x{zones_z} zones, zone_bits={zone_bits}).",
+                "success",
+            )
+            core.messagebox.showinfo(
+                "Terrain OBJ",
+                f"Saved Redux HG2:\n{save_path}\n\n"
+                f"Grid: {mesh.samples_x} x {mesh.samples_z} samples\n"
+                f"Zones: {zones_x} x {zones_z}\n"
+                f"Height range: {int(mesh.heights.min()) / 10.0:g} - "
+                f"{int(mesh.heights.max()) / 10.0:g} m",
+            )
+        except Exception as exc:
+            core.messagebox.showerror("Terrain OBJ", f"Failed to write HG2:\n{exc}")
 
     def browse_hg2(self):
         path = core.filedialog.askopenfilename(

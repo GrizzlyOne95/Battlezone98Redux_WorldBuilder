@@ -32,5 +32,5 @@ jobs:
     
     - name: Verify imports and syntax
       run: |
-        python -m py_compile world_builder.py world_builder_core.py hg2_codec.py mat_codec.py bzpaint.py maketrn_compat.py stock_map_creator.py legacy_port.py legacy_palette.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py legacy_port_cli.py msn_ter_codec.py msn2terrain.py
-        python -c "import world_builder, bzpaint, maketrn_compat, stock_map_creator, legacy_port, legacy_palette, legacy_preflight, legacy_batch, legacy_batch_gui, legacy_port_cli, msn_ter_codec, msn2terrain; print('Import successful')"
+        python -m py_compile world_builder.py world_builder_core.py hg2_codec.py terrain_obj.py mat_codec.py bzpaint.py maketrn_compat.py stock_map_creator.py legacy_port.py legacy_palette.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py legacy_port_cli.py msn_ter_codec.py msn2terrain.py
+        python -c "import world_builder, terrain_obj, bzpaint, maketrn_compat, stock_map_creator, legacy_port, legacy_palette, legacy_preflight, legacy_batch, legacy_batch_gui, legacy_port_cli, msn_ter_codec, msn2terrain; print('Import successful')"
