@@ -1,1 +1,7 @@
 world_builder_config.json
+__pycache__/
+*.pyc
+scripts/cc_atlas/cache/
+# mirrored source art, re-fetchable with scripts/cc_atlas/fetch_fe.py
+scripts/cc_atlas/fe_source/
+scripts/cc_atlas/out/
