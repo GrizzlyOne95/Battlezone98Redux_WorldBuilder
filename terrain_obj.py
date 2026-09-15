@@ -12,6 +12,7 @@ from hg2_codec import DEFAULT_ZONE_BITS, HG2_STORAGE_MAX_HEIGHT, read_hg2
 METERS_PER_ZONE = 1280.0
 HEIGHT_UNITS_PER_METER = 10.0
 OBJ_METADATA_PREFIX = "# bzr_"
+OBJ_METADATA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -56,7 +57,14 @@ def write_heightfield_obj(
     zones_z: int,
     zone_bits: int = DEFAULT_ZONE_BITS,
 ) -> None:
-    """Write an HG2-compatible heightfield as a regular Wavefront OBJ grid."""
+    """Write an HG2-compatible heightfield as a regular Wavefront OBJ grid.
+
+    The OBJ is centered around the origin for convenient editing. Sample zero is
+    placed at the minimum X / maximum Z edge of the full HG2 world extent, and
+    each subsequent sample advances by the HG2 sample spacing. That mirrors the
+    game's Width = samples_x * spacing convention rather than centering the
+    sample *centers* half a cell inward.
+    """
     array = np.asarray(heights)
     zone_size = 1 << int(zone_bits)
     expected_shape = (int(zones_z) * zone_size, int(zones_x) * zone_size)
@@ -67,13 +75,15 @@ def write_heightfield_obj(
 
     samples_z, samples_x = array.shape
     spacing = sample_spacing(zone_bits)
-    x0 = -((samples_x - 1) * spacing) / 2.0
-    z0 = ((samples_z - 1) * spacing) / 2.0
+    world_width = samples_x * spacing
+    world_depth = samples_z * spacing
+    x0 = -world_width / 2.0
+    z0 = world_depth / 2.0
 
     with open(path, "w", encoding="utf-8", newline="\n") as stream:
         stream.write("# Battlezone 98 Redux WorldBuilder terrain mesh\n")
         stream.write("# Edit vertex Y (height). Keep the X/Z grid intact for safe re-import.\n")
-        stream.write("# bzr_version=1\n")
+        stream.write(f"# bzr_version={OBJ_METADATA_VERSION}\n")
         stream.write("# bzr_format=HG2\n")
         stream.write(f"# bzr_zones_x={int(zones_x)}\n")
         stream.write(f"# bzr_zones_z={int(zones_z)}\n")
@@ -97,6 +107,7 @@ def write_heightfield_obj(
         _write_batch(stream, batch)
 
         # Quads keep heightfield OBJ files substantially smaller than two triangles per cell.
+        # Winding produces +Y-facing normals on an unmodified heightfield.
         for row in range(samples_z - 1):
             base = row * samples_x + 1
             next_base = (row + 1) * samples_x + 1
@@ -154,6 +165,31 @@ def _float_meta(metadata: Mapping[str, str], key: str) -> float | None:
     if not math.isfinite(result):
         raise ValueError(f"Invalid OBJ metadata {key}={value!r}")
     return result
+
+
+def _validate_metadata(metadata: Mapping[str, str]) -> None:
+    if not metadata:
+        return
+
+    version = _int_meta(metadata, "version")
+    if version is not None and version != OBJ_METADATA_VERSION:
+        raise ValueError(
+            f"Unsupported WorldBuilder terrain OBJ metadata version {version}; "
+            f"expected {OBJ_METADATA_VERSION}"
+        )
+
+    fmt = metadata.get("format")
+    if fmt is not None and fmt.strip().upper() != "HG2":
+        raise ValueError(f"Unsupported WorldBuilder terrain OBJ format {fmt!r}; expected 'HG2'")
+
+    height_units = _float_meta(metadata, "height_units_per_meter")
+    if height_units is not None:
+        tolerance = max(1e-8, HEIGHT_UNITS_PER_METER * 1e-6)
+        if abs(height_units - HEIGHT_UNITS_PER_METER) > tolerance:
+            raise ValueError(
+                f"OBJ height scale is {height_units:g} units/m; "
+                f"WorldBuilder HG2 expects {HEIGHT_UNITS_PER_METER:g} units/m"
+            )
 
 
 def _regular_axis(values: np.ndarray, *, descending: bool = False) -> tuple[np.ndarray, float | None]:
@@ -263,12 +299,24 @@ def read_terrain_obj(path: os.PathLike | str) -> TerrainOBJ:
     if not vertices:
         raise ValueError("OBJ contains no vertex records")
 
+    _validate_metadata(metadata)
     samples_x = _int_meta(metadata, "samples_x")
     samples_z = _int_meta(metadata, "samples_z")
     zones_x = _int_meta(metadata, "zones_x")
     zones_z = _int_meta(metadata, "zones_z")
     zone_bits = _int_meta(metadata, "zone_bits")
     spacing = _float_meta(metadata, "spacing")
+
+    if samples_x is not None and samples_x <= 0:
+        raise ValueError("OBJ metadata samples_x must be positive")
+    if samples_z is not None and samples_z <= 0:
+        raise ValueError("OBJ metadata samples_z must be positive")
+    if zones_x is not None and zones_x <= 0:
+        raise ValueError("OBJ metadata zones_x must be positive")
+    if zones_z is not None and zones_z <= 0:
+        raise ValueError("OBJ metadata zones_z must be positive")
+    if spacing is not None and spacing <= 0:
+        raise ValueError("OBJ metadata spacing must be positive")
 
     heights, inferred_x, inferred_z, inferred_spacing = _grid_from_vertices(
         np.asarray(vertices, dtype=np.float64),
@@ -308,6 +356,19 @@ def read_terrain_obj(path: os.PathLike | str) -> TerrainOBJ:
     )
 
 
+def _validate_resolved_spacing(mesh: TerrainOBJ, zone_bits: int) -> None:
+    if not mesh.spacing:
+        return
+    expected = sample_spacing(zone_bits)
+    tolerance = max(1e-5, expected * 1e-4)
+    if abs(mesh.spacing - expected) > tolerance:
+        raise ValueError(
+            f"OBJ grid uses {mesh.spacing:g} m/sample, but HG2 zone_bits={zone_bits} "
+            f"requires {expected:g} m/sample. Scale the OBJ X/Z grid or start from an "
+            "HG2 exported by WorldBuilder."
+        )
+
+
 def resolve_hg2_geometry(
     mesh: TerrainOBJ,
     *,
@@ -315,6 +376,7 @@ def resolve_hg2_geometry(
     preferred_zones_z: int | None = None,
 ) -> tuple[int, int, int]:
     if mesh.zone_bits is not None and mesh.zones_x is not None and mesh.zones_z is not None:
+        _validate_resolved_spacing(mesh, mesh.zone_bits)
         return mesh.zones_x, mesh.zones_z, mesh.zone_bits
 
     zone_bits = DEFAULT_ZONE_BITS
@@ -323,9 +385,11 @@ def resolve_hg2_geometry(
     if preferred_zones_x and preferred_zones_z:
         expected = (int(preferred_zones_z) * zone_size, int(preferred_zones_x) * zone_size)
         if mesh.heights.shape == expected:
+            _validate_resolved_spacing(mesh, zone_bits)
             return int(preferred_zones_x), int(preferred_zones_z), zone_bits
 
     if mesh.samples_x % zone_size == 0 and mesh.samples_z % zone_size == 0:
+        _validate_resolved_spacing(mesh, zone_bits)
         return mesh.samples_x // zone_size, mesh.samples_z // zone_size, zone_bits
 
     raise ValueError(
