@@ -36,9 +36,17 @@ The Legacy Atlas page also includes an **authored HGT -> Redux HG2** terrain upg
 <img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-b81d-e146e3d4d908" />
 
 ## Heightmap Converter
-Ports HGT or HG2 to PNG, or PNG back to HGT/HG2. Experimental World Machine implementation. 
+Ports HGT or HG2 to PNG, or PNG back to HGT/HG2. Experimental World Machine implementation.
 
-<img width="1402" height="982" alt="python_KBNkOhWxwZ" src="https://github.com/user-attachments/assets/5acc659f-bc2e-4d3e-87c5-1edeb8a86576" />
+The Heightmap Converter also includes a **Terrain OBJ Round-Trip** workflow inspired by the legacy TerraZone utility. It exports a Redux HG2 as a regular Wavefront OBJ grid, previews imported OBJ heightfields, and writes them back to HG2 without requiring Blender or `bpy` inside WorldBuilder. The OBJ includes WorldBuilder metadata for zone dimensions and sample spacing. On import, the X/Z grid is validated and used to reconstruct the heightfield, so vertex order may change; sculpting should modify Y/height while leaving the X/Z grid intact. OBJ files without WorldBuilder metadata can still be converted when their grid dimensions map cleanly to Redux's 256 samples per zone.
+
+This makes a practical workflow possible with any OBJ-capable modeler:
+
+```text
+HG2 -> OBJ -> sculpt terrain in Blender / 3ds Max / Maya / etc. -> OBJ -> HG2
+```
+
+<img width="1402" height="982" alt="python_KBNkOhWxwZ" src="https://github.com/user-attachments/assets/5acc659f-bc2e-4d3e87c5-1edeb8a86576" />
 
 
 ## Skybox Tools
