@@ -247,9 +247,9 @@ def read_terrain_obj(path: os.PathLike | str) -> TerrainOBJ:
             if line.startswith("#"):
                 _parse_metadata_line(line, metadata)
                 continue
-            if not line.startswith("v "):
-                continue
             parts = line.split()
+            if not parts or parts[0] != "v":
+                continue
             if len(parts) < 4:
                 raise ValueError(f"Malformed OBJ vertex on line {line_number}")
             try:
