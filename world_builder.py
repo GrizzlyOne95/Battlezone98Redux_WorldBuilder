@@ -414,7 +414,7 @@ class BZ98TRNArchitect(_BaseArchitect):
             if self.hg2img_compat.get():
                 h = np.flipud((heights & 0x0FFF).astype(np.uint16))
                 g = (h >> 4).astype(np.uint8)
-                r = (h & 0x0F).astype(np.uint8) if self.hg2img_precision.get() and red.max() <= 15 else np.zeros_like(g)
+                r = (h & 0x0F).astype(np.uint8) if self.hg2img_precision.get() else np.zeros_like(g)
                 b = np.zeros_like(g)
                 a = np.full_like(g, 255)
                 out_img = Image.fromarray(np.dstack([r, g, b, a]), mode="RGBA")
