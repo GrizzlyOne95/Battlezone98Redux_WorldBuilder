@@ -30,7 +30,10 @@ surface instead of describing the diffuse's luminance.
 | `runall.py` | build several worlds in parallel, resumable |
 | `prefetch.py` | mirror the source art locally first (see *Drive*, below) |
 | `make_trn.py` | `[TextureType]` blocks, and a complete `.trn` for a brand-new world |
+| `retrn.py` | rewrite a mod's own `.trn` files to name every tile the new atlas holds |
 | `check_all.py` | seam contract, header/mip agreement, CSV shape, zero-file check |
+| `check_trn.py` | a `.trn` against its CSV: phantom names, unnamed cells, header drift |
+| `Install-CCAtlases.ps1` | install into a mod folder, backing up and hashing every copy |
 | `verify_atlas.py` | the seam contract on its own, against the decoded DXT1 |
 | `stage.py` | copy to a deliverable folder and md5 both sides |
 | `table.py`, `compare_old_new.py`, `make_testmap.py` | reporting and in-game test carrier |
@@ -44,8 +47,14 @@ set CC_MOD_DIR=...\Redux Maps\ISDF Chronicles
 python prefetch.py
 python runall.py out
 python make_trn.py out
+python retrn.py out trn
 python check_all.py out
+python check_trn.py trn out
 ```
+
+`make_trn.py` reads the stock editor templates from `Edit	rn` under the Redux
+install (`REDUX_EDIT_TRN` overrides the path) so a new world gets a working
+`[Sky]`, `[Clouds]` and `[Color]` instead of an empty header.
 
 `CC_WORKERS` sets the parallelism (default 2). `CC_OLD_ATLASES` and
 `REDUX_ADDON` only matter to the reporting and test-map scripts.
@@ -74,3 +83,27 @@ is a world that landed; `check_all.py` looks for NUL runs directly.
 **A repacked atlas is not a drop-in for its own DDS.** Every UV rect changes when
 the grid does, so the `.csv` must be copied with the `.dds`. Shipping the atlas
 alone puts every tile in the wrong place.
+
+**A .trn's TextureType index is a paint index, not the atlas's matrix index.**
+`core.trn` declares TextureType 0, 2 and 5 and points them at `core00`, `core11`
+and `core22`, so a generated block cannot be pasted into an existing file — the
+mapping has to be recovered per file from each block's own `Solid` key, and a
+`CapTo` key names the target's *TextureType* number while the tile name carries
+matrix numbers. `retrn.py` does that; `TRN_Entries.txt` is documentation.
+
+**The line endings in a mod are not uniform.** In ISDF Chronicles `dunes.trn`
+ends every line CR CR LF and `core.trn` bare LF, and the engine parses both.
+Writing a rewritten file with a normalised terminator is a diff on every line of
+someone's map for no reason, so `retrn.py` copies the header through byte for
+byte and writes its own body with whatever that file already used.
+
+**Adding a TextureType is only free if nothing paints that index.** The `.mat`
+packs the pair of types meeting at each cell into one byte's two nibbles, so it
+says exactly which indices a map uses. Across the fifteen maps here only one
+addition lands on a painted index — `isdfms15` paints type 7 on 214 cells its
+`.trn` never declared, which have been drawing the default tile.
+
+**Stock ships `Edit	rn\mars.trn` and `titan.trn`** as well as
+`MARS_ATLAS_D.dds` and `TITAN_ATLAS_D.dds`. Anything a mod drops in under those
+names shadows the stock file for every stock map, which is why the new worlds are
+`ccmars`, `cctitan`, `ccearth`, `ccmetal` and `cctunnel` throughout.

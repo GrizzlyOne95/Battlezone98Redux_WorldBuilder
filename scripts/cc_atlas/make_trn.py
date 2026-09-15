@@ -5,7 +5,7 @@ A tile nothing names is dead weight, so every tile the atlas carries gets a key
 here -- including the ones this rebuild added, which are marked so it is obvious
 what is new against the world's current .trn.
 """
-import json, os, sys
+import json, os, re, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -15,12 +15,53 @@ from worlds2 import WORLDS
 
 SLOT = "ABCD"
 
-# Stock palette / lighting-table sets, so a new world's .trn resolves against
-# the base game with nothing else installed.
-COLOR = {"ccmars_detail_atlas": "MARS", "cctitan_detail_atlas": "TITAN",
-         "ccearth_detail_atlas": "ACHILLES", "ccmetal_detail_atlas": "MOON",
-         "cctunnel_detail_atlas": "MOON"}
+# The stock editor template each new world borrows its environment from.  These
+# carry a working [Sky], [Clouds], [Stars] and [Color] set that the base game
+# already ships every texture for, which an invented header does not: an empty
+# [Sky] leaves a new world with no sun, no sky and no clouds.
+STOCK = {"ccmars_detail_atlas": "mars", "cctitan_detail_atlas": "titan",
+         "ccearth_detail_atlas": "achilles", "ccmetal_detail_atlas": "moon",
+         "cctunnel_detail_atlas": "moon"}
 
+EDIT_TRN = os.environ.get("REDUX_EDIT_TRN", os.path.join(
+    os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+    "Steam", "steamapps", "common", "Battlezone 98 Redux", "Edit", "trn"))
+
+# A custom map is its own square starting at the origin; the stock templates sit
+# at the offsets their own campaign missions used (moon.trn starts at z=96000).
+SIZE = """[Size]
+MinX=0
+MinZ=0
+Width=5120
+Depth=5120
+Height=0.000000
+
+"""
+
+
+def stock_head(mat):
+    """The stock template's header with our material swapped in, or None.
+
+    Everything but [Size] and [Atlases] is taken as it stands -- fog, sky,
+    clouds, stars, palette and music are a working set someone tuned, and a
+    rebuild has no better guess."""
+    path = os.path.join(EDIT_TRN, STOCK[mat] + ".trn")
+    if not os.path.exists(path):
+        return None
+    text = open(path, "r", encoding="latin-1", newline="").read().replace("\r\n", "\n")
+    head = re.split(r"(?m)^\[TextureType", text)[0]
+    out = []
+    for part in re.split(r"(?m)^(?=\[)", head):
+        if re.match(r"\[Size\]", part, re.I):
+            continue
+        out.append(re.sub(r"(?im)^(MaterialName\s*)=.*$", r"\1= " + mat, part))
+    return SIZE + "".join(out).rstrip("\n") + "\n\n"
+
+PALETTE = {"ccmars_detail_atlas": "MARS", "cctitan_detail_atlas": "TITAN",
+           "ccearth_detail_atlas": "ACHILLES", "ccmetal_detail_atlas": "MOON",
+           "cctunnel_detail_atlas": "MOON"}
+
+# Fallback only, for a machine with no Redux install to read templates from.
 HEAD = """[Size]
 MinX=0
 MinZ=0
@@ -110,8 +151,16 @@ def main(out_root):
         open(os.path.join(d, "TRN_Entries.txt"), "w", newline="\r\n").write(
             "\n".join(head + body) + "\n")
         if cfg.get("new"):
-            name = cfg["world"].lower() + ".trn"
-            txt = HEAD.format(mat=mat, pal=COLOR[mat]) + "\n".join(body) + "\n"
+            # Named for the material, not the world: stock ships Edit\trn\
+            # mars.trn and titan.trn, and a same-named file in a mod folder
+            # would shadow the editor's own template for that world -- the same
+            # trap the CCMARS_ATLAS_D.dds prefix exists to avoid.
+            name = mat.rsplit("_detail", 1)[0] + ".trn"
+            head = stock_head(mat)
+            if head is None:
+                print("  no stock template for %s, using the plain header" % mat)
+                head = HEAD.format(mat=mat, pal=PALETTE[mat])
+            txt = head + "\n".join(body) + "\n"
             open(os.path.join(d, name), "w", newline="\r\n").write(txt)
             print("wrote", os.path.join(d, name))
         print("%-24s %d type blocks" % (mat, len(cfg["types"])))
