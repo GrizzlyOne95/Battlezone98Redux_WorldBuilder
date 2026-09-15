@@ -33,7 +33,7 @@ Ports custom worlds from 1.5 format into Redux. Auto converts the .MAP files int
 
 The Legacy Atlas page also includes an **authored HGT -> Redux HG2** terrain upgrader. Select the original `.hgt`; WorldBuilder reads the companion `.trn` dimensions, preserves the low 12-bit legacy height samples and zone ordering, performs the recovered 128 -> 256 samples-per-zone triangle interpolation, and writes a canonical Redux `.hg2`. It deliberately skips the post-upgrade 3x3 smoothing pass, matching the terrain-upgrade behavior requested by Redux's `-nohgtsmoothing` launch option. No Gaussian filtering or height renormalization is applied.
 
-<img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-b81d-e146e3d4d908" />
+<img width="1402" height="982" alt="python_TDaQIDixe7" src="https://github.com/user-attachments/assets/0ad9a060-8804-4e1e-87c5-1edeb8a86576" />
 
 ## Heightmap Converter
 Ports HGT or HG2 to PNG, or PNG back to HGT/HG2. Experimental World Machine implementation.
@@ -46,7 +46,7 @@ This makes a practical workflow possible with any OBJ-capable modeler:
 HG2 -> OBJ -> sculpt terrain in Blender / 3ds Max / Maya / etc. -> OBJ -> HG2
 ```
 
-<img width="1402" height="982" alt="python_KBNkOhWxwZ" src="https://github.com/user-attachments/assets/5acc659f-bc2e-4d3e87c5-1edeb8a86576" />
+<img width="1402" height="982" alt="python_KBNkOhWxwZ" src="https://github.com/user-attachments/assets/5acc659f-bc2e-4d3e-87c5-1edeb8a86576" />
 
 
 ## Skybox Tools
