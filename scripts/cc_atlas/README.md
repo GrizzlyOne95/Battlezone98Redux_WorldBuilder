@@ -28,7 +28,8 @@ surface instead of describing the diffuse's luminance.
 | `worlds2.py` | every world: TextureType → source texture, which types blend, unused art |
 | `build2.py` | the builder — planning, masking, mip chain, DDS/CSV/material output |
 | `runall.py` | build several worlds in parallel, resumable |
-| `prefetch.py` | mirror the source art locally first (see *Drive*, below) |
+| `prefetch.py` | mirror the CC source art locally first (see *Drive*, below) |
+| `fetch_fe.py` | mirror the Forgotten Enemies Remastered art Mercury is built from |
 | `make_trn.py` | `[TextureType]` blocks, and a complete `.trn` for a brand-new world |
 | `retrn.py` | rewrite a mod's own `.trn` files to name every tile the new atlas holds |
 | `check_all.py` | seam contract, header/mip agreement, CSV shape, zero-file check |
@@ -45,6 +46,7 @@ surface instead of describing the diffuse's luminance.
 set CC_ROOT=...\CombatCommanderSourceMaterialModsv2
 set CC_MOD_DIR=...\Redux Maps\ISDF Chronicles
 python prefetch.py
+python fetch_fe.py          # Mercury only -- see "Not all of it is CC art"
 python runall.py out
 python make_trn.py out
 python retrn.py out trn
@@ -58,6 +60,25 @@ install (`REDUX_EDIT_TRN` overrides the path) so a new world gets a working
 
 `CC_WORKERS` sets the parallelism (default 2). `CC_OLD_ATLASES` and
 `REDUX_ADDON` only matter to the reporting and test-map scripts.
+
+## Not all of it is CC art
+
+Mercury is the exception. Its source is **Forgotten Enemies Remastered**
+(`github.com/BlackDragonN001/FERemastered`, `FE_RM_Source/Worlds/Mercury`), not
+the Combat Commander tree, so `mc_detail_atlas` carries its own `root` and
+`fetch_fe.py` mirrors it. Everything without a `root` still resolves against
+`CC_ROOT`. `fe_source/` is gitignored — it is 219 MB and re-fetchable.
+
+FE names its diffuse `<name>_d` with `_n` / `_s` / `_e` beside it; `load_source`
+wants the diffuse bare, so `fetch_fe.py` drops the `_d` on the way in and leaves
+the siblings alone. That is the only accommodation the two trees need.
+
+Which FE texture is which TextureType was **recovered, not guessed** — the six
+solids of the shipped atlas correlate against the FE tree at 0.975 / 0.996 /
+0.770 / 0.815 / 0.915 for types 0–4, with types 4 and 5 turning out to be the
+rock and volcano *prop* textures rather than terrain. Type 5's shipped tile is
+one unique colour (pure black), and `isdfms05.mat` paints type 5 nowhere, so
+giving it the volcano art is an upgrade rather than a change.
 
 ## Things that cost a day each
 

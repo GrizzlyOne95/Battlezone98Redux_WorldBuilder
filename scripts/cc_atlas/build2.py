@@ -190,11 +190,16 @@ def build(mat, cfg, out_dir, required, tile_px=None, quiet=False):
             if m and m.group(4).lower() == "s" and m.group(2) == m.group(3):
                 solid_rect.setdefault(int(m.group(2)), (u, v, du, dv))
 
+    # Most worlds read from the CC tree (or its local mirror); a world that
+    # carries its own `root` -- Mercury comes from Forgotten Enemies Remastered,
+    # not Combat Commander -- reads from that instead.
+    root = cfg.get("root", SRC_ROOT)
+
     placements = [(t["name"], n % grid, n // grid) for n, t in enumerate(plan)]
     report = dict(material=mat, world=cfg["world"], grid=grid, tile_px=tile_px,
                   atlas_px=atlas_px, types={str(k): v for k, v in sorted(types.items())},
                   blend=cfg["blend"], cells=grid * grid, tiles=len(plan),
-                  src_root=SRC_ROOT,
+                  src_root=root,
                   occupancy=round(len(plan) / (grid * grid), 4),
                   added=[dict(name=t["name"], why=t["why"], src=t["src"]) for t in plan
                          if t["why"] != "core"])
@@ -206,14 +211,14 @@ def build(mat, cfg, out_dir, required, tile_px=None, quiet=False):
                 src[i], found[i] = cut_existing(
                     MOD_DIR, tex, ch, solid_rect.get(i, (0, 0, 1.0 / grid, 1.0 / grid)), tile_px)
             else:
-                src[i], found[i] = load_source(SRC_ROOT, rel, ch, tile_px,
+                src[i], found[i] = load_source(root, rel, ch, tile_px,
                                                cfg.get("emissive_scale", 1.0),
                                                cfg.get("specular_scale", 1.0))
         extra = {}
         for t in plan:
             s = t["src"]
             if s and not s.startswith("rot") and s not in extra:
-                extra[s], _ = load_source(SRC_ROOT, s, ch, tile_px,
+                extra[s], _ = load_source(root, s, ch, tile_px,
                                           cfg.get("emissive_scale", 1.0),
                                           cfg.get("specular_scale", 1.0))
 

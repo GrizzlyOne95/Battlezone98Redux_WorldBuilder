@@ -29,6 +29,13 @@ MOD_DIR = os.environ.get("CC_MOD_DIR", os.path.expanduser(os.path.join(
     "~", "Documents", "Google Drive", "Ian Files", "Battlezone Files",
     "Redux Maps", "ISDF Chronicles")))
 
+# Mercury is not Combat Commander art. It comes from Forgotten Enemies
+# Remastered (github.com/BlackDragonN001/FERemastered, FE_RM_Source/Worlds/
+# Mercury), mirrored locally by fetch_fe.py, so that world carries its own
+# `root`. Anything without a `root` still resolves against the CC tree.
+FE_ROOT = os.environ.get("FE_ROOT", os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "fe_source"))
+
 W = "Worlds/"
 
 WORLDS = {
@@ -101,6 +108,26 @@ WORLDS = {
                4: W+"Mire/mire5.tga", 5: W+"Mire/mire3.tga"},
         blend=[0, 1, 2, 3, 4, 5],
         pool=[W+"Mire/mire.tga", W+"Mire/mire4.tga"],
+    ),
+    # ------------------------------------------------------------- Mercury
+    # Six types, and FE ships exactly six surfaces -- four terrain plus the rock
+    # and volcano prop textures, which is what isdfms05 already paints with:
+    # correlating the six solids of the shipped atlas against the FE tree scores
+    # 0.975 / 0.996 / 0.770 / 0.815 / 0.915 for types 0-4, and type 5 is a pure
+    # black tile (one unique colour), so the volcano is a free upgrade rather
+    # than a change -- isdfms05.mat paints type 5 nowhere.
+    #
+    # Promoting 5 to a blend type makes 6*6 = 36 tiles, which fills a 6x6 grid
+    # exactly. The shipped atlas is 8x8 with 26 of 64 cells used.
+    "mc_detail_atlas": dict(
+        prefix="MERCURY", tile="merc", world="Mercury", root=FE_ROOT,
+        types={0: "Worlds/Mercury/Terrain/Mercury1.tga",
+               1: "Worlds/Mercury/Terrain/Mercury2.tga",
+               2: "Worlds/Mercury/Terrain/Mercury3.tga",
+               3: "Worlds/Mercury/Terrain/Mercury4.tga",
+               4: "Worlds/Mercury/Props/Rocks/Mercury_Rock_01.png",
+               5: "Worlds/Mercury/Props/Volcano/Mercury_Volcano.tga"},
+        blend=[0, 1, 2, 3, 4, 5],
     ),
     "re_detail_atlas": dict(
         prefix="REND", tile="rend", world="Rend",
