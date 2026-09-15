@@ -74,7 +74,7 @@ class TerrainOBJTests(unittest.TestCase):
             with open(obj_path, "w", encoding="utf-8", newline="\n") as stream:
                 stream.write(text)
 
-            with self.assertRaisesRegex(ValueError, "rectangular grid|regular X/Z"):
+            with self.assertRaisesRegex(ValueError, "rectangular grid|regular X/Z|regular terrain grid"):
                 read_terrain_obj(obj_path)
 
     def test_metadata_geometry_resolves_for_hg2_export(self):
