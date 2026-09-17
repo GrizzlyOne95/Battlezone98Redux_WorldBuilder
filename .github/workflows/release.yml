@@ -70,8 +70,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          python scripts/generate_app_icon.py branding/repo_icon.svg wb.ico
-          pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." world_builder.py
+          python scripts/generate_app_icon.py branding/repo_icon.svg wb.ico --png branding/app_icon.png
+          Copy-Item wb.ico branding/app_icon.ico -Force
+          pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." --add-data="wb.ico;." --add-data="branding/app_icon.png;branding" --add-data="branding/app_icon.ico;branding" --runtime-hook branding/pyinstaller_icon_hook.py world_builder.py
           $asset = Get-Item .\dist\world-builder-windows.exe
           if ($asset.Length -lt 1000000) { throw "Windows release asset is unexpectedly small: $($asset.Length) bytes" }
           $archive = pyi-archive_viewer .\dist\world-builder-windows.exe -l | Out-String
