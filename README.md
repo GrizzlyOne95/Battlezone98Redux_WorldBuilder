@@ -1,9 +1,36 @@
 <p align="center">
-  <img src="branding/repo_icon.svg" width="180" alt="Battlezone98Redux World Builder icon">
+  <img src="branding/repo_icon.svg" width="180" alt="Battlezone World Builder icon">
 </p>
 
-# Battlezone98Redux_WorldBuilder
-A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2/HGT conversion, and more
+# Battlezone World Builder
+A powerful world building tool that auto creates custom atlases, material files, TRN entries, cubemaps, HG2/HGT conversion, and more.
+
+## Release Builds
+
+Download the latest platform archive from the GitHub Releases page. Public application names are intentionally stable and versionless:
+
+- Windows GUI: `BZWorldBuilder.exe`
+- Windows CLI: `BZWorldBuilderCLI.exe`
+- Linux GUI: `BZWorldBuilder`
+- macOS app: `BZWorldBuilder.app`
+
+Release archives carry the version and platform, for example:
+
+- `Battlezone98Redux_WorldBuilder-v1.0.16-windows.zip`
+- `Battlezone98Redux_WorldBuilder-v1.0.16-windows-cli.zip`
+- `Battlezone98Redux_WorldBuilder-v1.0.16-linux.tar.gz`
+- `Battlezone98Redux_WorldBuilder-v1.0.16-macos.zip`
+
+Official Windows builds use the shared **Battlezone Modding Tools** product identity. The GUI executable uses:
+
+```text
+FileDescription: Battlezone World Builder
+ProductName: Battlezone Modding Tools
+CompanyName: GrizzlyOne95
+OriginalFilename: BZWorldBuilder.exe
+```
+
+The separate CLI uses `FileDescription: Battlezone World Builder CLI` and `OriginalFilename: BZWorldBuilderCLI.exe`. `FileVersion` and `ProductVersion` are derived from the release tag.
 
 ## Stock Map Creator
 Auto generates TRN, HG2, and MAT files based on default worlds without needing to use MakeTRN. Implements the useful MakeTRN 2.1.2 controls recovered from the original executable, including independent width/depth, EmptyElevation, `[LayerN]` parameter files, and legacy runtime-random MAT variants. WorldBuilder also keeps its selectable Redux worlds, time, audio, and lighting controls.
