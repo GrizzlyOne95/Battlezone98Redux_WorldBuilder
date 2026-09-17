@@ -26,13 +26,10 @@ jobs:
         include:
           - platform: linux
             os: ubuntu-latest
-            asset: world-builder-linux
           - platform: windows
             os: windows-latest
-            asset: world-builder-windows.exe
           - platform: macos
             os: macos-latest
-            asset: world-builder-macos.zip
 
     steps:
       - name: Checkout code
@@ -56,61 +53,92 @@ jobs:
 
       - name: Verify imports and syntax
         run: |
-          python -m py_compile world_builder.py terrain_obj.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py scripts/generate_app_icon.py
+          python -m py_compile world_builder.py terrain_obj.py legacy_port_cli.py legacy_preflight.py legacy_preflight_hook.py legacy_batch.py legacy_batch_gui.py scripts/generate_app_icon.py scripts/generate_version_info.py
           python -c "import world_builder; import terrain_obj; import legacy_port_cli; import legacy_preflight; import legacy_batch; import legacy_batch_gui; print('Import successful')"
 
-      - name: Build Linux executable
+      - name: Build and package Linux executable
         if: runner.os == 'Linux'
+        shell: bash
         run: |
-          pyinstaller --noconfirm --clean --onefile --copy-metadata imageio --name world-builder-linux --add-data="BZONE.ttf:." world_builder.py
-          test "$(stat -c%s dist/world-builder-linux)" -gt 1000000
-          pyi-archive_viewer dist/world-builder-linux -l | grep -E 'imageio.*\.dist-info'
+          set -euo pipefail
+          pyinstaller --noconfirm --clean --onefile --copy-metadata imageio --name BZWorldBuilder --add-data="BZONE.ttf:." world_builder.py
+          test "$(stat -c%s dist/BZWorldBuilder)" -gt 1000000
+          pyi-archive_viewer dist/BZWorldBuilder -l | grep -E 'imageio.*\.dist-info'
+          tar -czf "dist/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-linux.tar.gz" -C dist BZWorldBuilder
 
-      - name: Build Windows executable
+      - name: Generate Windows branding and version metadata
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           python scripts/generate_app_icon.py branding/repo_icon.svg wb.ico --png branding/app_icon.png
           Copy-Item wb.ico branding/app_icon.ico -Force
-          pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --name world-builder-windows --add-data="BZONE.ttf;." --add-data="wb.ico;." --add-data="branding/app_icon.png;branding" --add-data="branding/app_icon.ico;branding" --runtime-hook branding/pyinstaller_icon_hook.py world_builder.py
-          $asset = Get-Item .\dist\world-builder-windows.exe
+          python scripts/generate_version_info.py --version "${env:RELEASE_TAG}" --target gui --output branding/version_info_gui.txt
+          python scripts/generate_version_info.py --version "${env:RELEASE_TAG}" --target cli --output branding/version_info_cli.txt
+
+      - name: Build Windows GUI executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --copy-metadata imageio --icon=wb.ico --version-file=branding/version_info_gui.txt --name BZWorldBuilder --add-data="BZONE.ttf;." --add-data="wb.ico;." --add-data="branding/app_icon.png;branding" --add-data="branding/app_icon.ico;branding" --runtime-hook branding/pyinstaller_icon_hook.py world_builder.py
+          $asset = Get-Item .\dist\BZWorldBuilder.exe
           if ($asset.Length -lt 1000000) { throw "Windows release asset is unexpectedly small: $($asset.Length) bytes" }
-          $archive = pyi-archive_viewer .\dist\world-builder-windows.exe -l | Out-String
+          $archive = pyi-archive_viewer .\dist\BZWorldBuilder.exe -l | Out-String
           if ($archive -notmatch 'imageio.*\.dist-info') { throw "Frozen Windows executable is missing imageio distribution metadata" }
 
       - name: Build Windows CLI executable
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --console --copy-metadata imageio --icon=wb.ico --name world-builder-cli --add-data="BZONE.ttf;." legacy_port_cli.py
-          $asset = Get-Item .\dist\world-builder-cli.exe
+          pyinstaller --noconfirm --clean --onefile --console --copy-metadata imageio --icon=wb.ico --version-file=branding/version_info_cli.txt --name BZWorldBuilderCLI --add-data="BZONE.ttf;." legacy_port_cli.py
+          $asset = Get-Item .\dist\BZWorldBuilderCLI.exe
           if ($asset.Length -lt 1000000) { throw "Windows CLI release asset is unexpectedly small: $($asset.Length) bytes" }
-          $archive = pyi-archive_viewer .\dist\world-builder-cli.exe -l | Out-String
+          $archive = pyi-archive_viewer .\dist\BZWorldBuilderCLI.exe -l | Out-String
           if ($archive -notmatch 'imageio.*\.dist-info') { throw "Frozen Windows CLI executable is missing imageio distribution metadata" }
+
+      - name: Package Windows release archives
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path .\dist\BZWorldBuilder.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${env:RELEASE_TAG}-windows.zip" -Force
+          Compress-Archive -Path .\dist\BZWorldBuilderCLI.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${env:RELEASE_TAG}-windows-cli.zip" -Force
 
       - name: Build and package macOS app
         if: runner.os == 'macOS'
+        shell: bash
         run: |
-          pyinstaller --noconfirm --clean --onedir --windowed --copy-metadata imageio --name world_builder --add-data="BZONE.ttf:." world_builder.py
-          test -d dist/world_builder.app
-          find dist/world_builder.app -path '*imageio*.dist-info/METADATA' -print -quit | grep .
-          ditto -c -k --sequesterRsrc --keepParent dist/world_builder.app dist/world-builder-macos.zip
-          test "$(stat -f%z dist/world-builder-macos.zip)" -gt 1000000
+          set -euo pipefail
+          pyinstaller --noconfirm --clean --onedir --windowed --copy-metadata imageio --name BZWorldBuilder --add-data="BZONE.ttf:." world_builder.py
+          test -d dist/BZWorldBuilder.app
+          find dist/BZWorldBuilder.app -path '*imageio*.dist-info/METADATA' -print -quit | grep .
+          ditto -c -k --sequesterRsrc --keepParent dist/BZWorldBuilder.app "dist/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-macos.zip"
+          test "$(stat -f%z "dist/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-macos.zip")" -gt 1000000
 
-      - name: Upload packaged asset
+      - name: Upload Linux archive
+        if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: world-builder-${{ matrix.platform }}
-          path: dist/${{ matrix.asset }}
+          name: Battlezone98Redux_WorldBuilder-linux
+          path: dist/Battlezone98Redux_WorldBuilder-*-linux.tar.gz
           if-no-files-found: error
           retention-days: 7
 
-      - name: Upload Windows CLI asset
+      - name: Upload Windows archives
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: world-builder-cli
-          path: dist/world-builder-cli.exe
+          name: Battlezone98Redux_WorldBuilder-windows
+          path: |
+            dist/Battlezone98Redux_WorldBuilder-*-windows.zip
+            dist/Battlezone98Redux_WorldBuilder-*-windows-cli.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload macOS archive
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Battlezone98Redux_WorldBuilder-macos
+          path: dist/Battlezone98Redux_WorldBuilder-*-macos.zip
           if-no-files-found: error
           retention-days: 7
 
@@ -125,17 +153,19 @@ jobs:
       - name: Download packaged assets
         uses: actions/download-artifact@v4
         with:
-          pattern: world-builder-*
+          pattern: Battlezone98Redux_WorldBuilder-*
           path: release-assets
           merge-multiple: true
 
       - name: Verify release payload
+        shell: bash
         run: |
+          set -euo pipefail
           ls -lh release-assets
-          test "$(stat -c%s release-assets/world-builder-linux)" -gt 1000000
-          test "$(stat -c%s release-assets/world-builder-windows.exe)" -gt 1000000
-          test "$(stat -c%s release-assets/world-builder-cli.exe)" -gt 1000000
-          test "$(stat -c%s release-assets/world-builder-macos.zip)" -gt 1000000
+          test "$(stat -c%s "release-assets/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-windows.zip")" -gt 1000000
+          test "$(stat -c%s "release-assets/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-windows-cli.zip")" -gt 1000000
+          test "$(stat -c%s "release-assets/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-linux.tar.gz")" -gt 1000000
+          test "$(stat -c%s "release-assets/Battlezone98Redux_WorldBuilder-${RELEASE_TAG}-macos.zip")" -gt 1000000
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
@@ -144,7 +174,12 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: Release ${{ env.RELEASE_TAG }}
           body_path: docs/RELEASE_NOTES_${{ env.RELEASE_TAG }}.md
-          files: release-assets/*
+          files: |
+            release-assets/Battlezone98Redux_WorldBuilder-v*-windows.zip
+            release-assets/Battlezone98Redux_WorldBuilder-v*-windows-cli.zip
+            release-assets/Battlezone98Redux_WorldBuilder-v*-linux.tar.gz
+            release-assets/Battlezone98Redux_WorldBuilder-v*-macos.zip
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false
         env:
