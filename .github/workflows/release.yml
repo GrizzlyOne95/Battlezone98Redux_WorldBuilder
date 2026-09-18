@@ -114,8 +114,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path .\dist\BZWorldBuilder.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${env:RELEASE_TAG}-windows.zip" -Force
-          Compress-Archive -Path .\dist\BZWorldBuilderCLI.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${env:RELEASE_TAG}-windows-cli.zip" -Force
+          Compress-Archive -Path .\dist\BZWorldBuilder.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${{ steps.version.outputs.tag }}-windows.zip" -Force
+          Compress-Archive -Path .\dist\BZWorldBuilderCLI.exe -DestinationPath ".\dist\Battlezone98Redux_WorldBuilder-${{ steps.version.outputs.tag }}-windows-cli.zip" -Force
 
       - name: Build and package macOS app
         if: runner.os == 'macOS'
